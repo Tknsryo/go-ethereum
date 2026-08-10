@@ -81,7 +81,10 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require gopkg.in/pebbe/zmq4.v1 v1.2.1 // indirect
+require (
+	github.com/pebbe/zmq4 v1.4.0 // indirect
+	gopkg.in/pebbe/zmq4.v1 v1.2.1
+)
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.7.0 // indirect
