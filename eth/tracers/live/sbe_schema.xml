@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="ethereum.tracing"
+                   id="1"
+                   version="1"
+                   semanticVersion="1.0.0"
+                   description="Ethereum Blockchain Events"
+                   byteOrder="littleEndian">
+    <types>
+        <!-- Message header (required by SBE) -->
+        <composite name="messageHeader" description="Message identifiers and length of message root">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId" primitiveType="uint16"/>
+            <type name="schemaId" primitiveType="uint16"/>
+            <type name="version" primitiveType="uint16"/>
+        </composite>
+
+        <!-- Group size encoding for repeating groups -->
+        <composite name="groupSizeEncoding" description="Repeating group dimensions">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="numInGroup" primitiveType="uint8"/>
+        </composite>
+
+        <!-- Variable length data encoding -->
+        <composite name="varDataEncoding" description="Variable length data">
+            <type name="length" primitiveType="uint32" maxValue="2147483647"/>
+            <type name="varData" primitiveType="uint8" length="0"/>
+        </composite>
+
+        <!-- Ethereum specific types -->
+        <type name="Address" primitiveType="uint8" length="20" description="20-byte Ethereum address"/>
+        <type name="Hash" primitiveType="uint8" length="32" description="32-byte hash"/>
+        <type name="Timestamp" primitiveType="uint64" description="Unix timestamp in nanoseconds"/>
+        <type name="SessionID" primitiveType="uint32" description="Session identifier"/>
+
+        <!-- Enumerations -->
+        <enum name="EventType" encodingType="uint8">
+            <validValue name="TxStart">1</validValue>
+            <validValue name="TxEnd">2</validValue>
+            <validValue name="Enter">3</validValue>
+            <validValue name="Exit">4</validValue>
+            <validValue name="BlockStart">5</validValue>
+            <validValue name="BlockEnd">6</validValue>
+            <validValue name="Log">7</validValue>
+        </enum>
+
+        <enum name="MessageType" encodingType="uint8">
+            <validValue name="SessionCreateRequest">1</validValue>
+            <validValue name="SessionCreateResponse">2</validValue>
+        </enum>
+
+        <enum name="Status" encodingType="uint8">
+            <validValue name="Success">0</validValue>
+            <validValue name="Error">1</validValue>
+        </enum>
+    </types>
+
+    <!-- Blockchain Events -->
+
+    <sbe:message name="TxStartEvent" id="10" description="Transaction execution begins">
+        <field name="EventType" id="1" type="EventType"/>
+        <field name="Timestamp" id="2" type="Timestamp"/>
+        <field name="TxHash" id="4" type="Hash" description="Transaction hash"/>
+        <field name="From" id="5" type="Address" description="Sender address"/>
+        <field name="To" id="6" type="Address" description="Recipient address"/>
+        <field name="Value" id="7" type="Hash" description="Value as uint256"/>
+        <field name="GasLimit" id="8" type="uint64" description="Gas limit"/>
+        <field name="GasPrice" id="9" type="Hash" description="Gas price as uint256"/>
+        <field name="Nonce" id="10" type="uint64" description="Sender nonce"/>
+    </sbe:message>
+
+    <sbe:message name="TxEndEvent" id="11" description="Transaction execution completes">
+        <field name="EventType" id="1" type="EventType"/>
+        <field name="Timestamp" id="2" type="Timestamp"/>
+        <field name="TxHash" id="4" type="Hash" description="Transaction hash"/>
+        <field name="Status" id="5" type="uint8" description="0=failed, 1=success"/>
+        <field name="GasUsed" id="6" type="uint64" description="Gas used"/>
+        <field name="BlockNumber" id="7" type="uint64" description="Block number"/>
+        <field name="BlockHash" id="8" type="Hash" description="Block hash"/>
+    </sbe:message>
+
+    <sbe:message name="CallEvent" id="12" description="EVM call frame entry/exit">
+        <field name="EventType" id="1" type="EventType"/>
+        <field name="Timestamp" id="2" type="Timestamp"/>
+        <field name="Depth" id="4" type="uint8" description="Call depth"/>
+        <field name="CallType" id="5" type="uint8" description="CALL, CREATE, etc"/>
+        <field name="From" id="6" type="Address" description="Caller address"/>
+        <field name="To" id="7" type="Address" description="Callee address"/>
+        <field name="Gas" id="8" type="uint64" description="Gas for this call"/>
+        <field name="Value" id="9" type="Hash" description="Value"/>
+        <field name="OutputSize" id="10" type="uint32" description="Output size"/>
+        <field name="Reverted" id="11" type="uint8" description="Reverted flag"/>
+        <data name="Input" id="13" type="varDataEncoding" description="Input data"/>
+        <data name="Output" id="12" type="varDataEncoding" description="Output data"/>
+    </sbe:message>
+
+    <sbe:message name="BlockEvent" id="13" description="Block processing start/end">
+        <field name="EventType" id="1" type="EventType"/>
+        <field name="Timestamp" id="2" type="Timestamp"/>
+        <field name="Number" id="4" type="uint64" description="Block number"/>
+        <field name="Hash" id="5" type="Hash" description="Block hash"/>
+        <field name="ParentHash" id="6" type="Hash" description="Parent block hash"/>
+        <field name="BlockTimestamp" id="7" type="uint64" description="Block timestamp"/>
+    </sbe:message>
+
+    <sbe:message name="LogEvent" id="14" description="Event log emitted">
+        <field name="EventType" id="1" type="EventType"/>
+        <field name="Timestamp" id="2" type="Timestamp"/>
+        <field name="Address" id="4" type="Address" description="Contract address"/>
+        <field name="TopicsCount" id="5" type="uint8" description="Number of topics"/>
+        <group name="Topics" id="6" dimensionType="groupSizeEncoding" description="Event topics">
+            <field name="Topic" id="1" type="Hash"/>
+        </group>
+        <data name="LogData" id="7" type="varDataEncoding" description="Event data"/>
+    </sbe:message>
+
+    <!-- Session Control Messages -->
+
+    <sbe:message name="SessionCreateRequest" id="20" description="Request to create a new session">
+        <field name="MessageType" id="1" type="MessageType"/>
+        <field name="FilterMask" id="2" type="uint32" description="Event type filter bitmask"/>
+        <field name="ClientID0" id="3" type="uint64" description="Client ID part 0"/>
+        <field name="ClientID1" id="4" type="uint64" description="Client ID part 1"/>
+    </sbe:message>
+
+    <sbe:message name="SessionCreateResponse" id="21" description="Response to session creation">
+        <field name="MessageType" id="1" type="MessageType"/>
+        <field name="SessionID" id="2" type="SessionID"/>
+        <field name="Status" id="3" type="Status"/>
+        <data name="PubEndpoint" id="4" type="varDataEncoding" description="PUB socket endpoint"/>
+        <data name="ErrorMsg" id="5" type="varDataEncoding" description="Error message"/>
+    </sbe:message>
+
+</sbe:messageSchema>
