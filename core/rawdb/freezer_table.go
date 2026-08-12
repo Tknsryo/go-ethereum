@@ -209,6 +209,47 @@ func newTable(path string, name string, readMeter, writeMeter *metrics.Meter, si
 // repair cross-checks the head and the index file and truncates them to
 // be in sync with each other after a potential crash / data loss.
 func (t *freezerTable) repair() error {
+	// For prunable tables with missing data files, reset to empty state
+	// This handles the case where data files were manually deleted for pruning
+	if t.config.prunable {
+		// Check if head file can be opened
+		stat, err := t.index.Stat()
+		if err != nil {
+			return err
+		}
+		if stat.Size() > 0 {
+			// Index has entries, check if data files exist
+			buffer := make([]byte, indexEntrySize)
+			t.index.ReadAt(buffer, stat.Size()-indexEntrySize)
+			var lastIndex indexEntry
+			lastIndex.unmarshalBinary(buffer)
+
+			headFile := fmt.Sprintf("%s.%04d.cdat", t.name, lastIndex.filenum)
+			if t.config.noSnappy {
+				headFile = fmt.Sprintf("%s.%04d.rdat", t.name, lastIndex.filenum)
+			}
+			headPath := filepath.Join(t.path, headFile)
+
+			if _, err := os.Stat(headPath); os.IsNotExist(err) {
+				// Data file missing, reset index to empty
+				t.logger.Warn("Prunable table data missing, resetting to empty", "table", t.name, "file", headFile)
+				if err := truncateFreezerFile(t.index, 0); err != nil {
+					return err
+				}
+				if _, err := t.index.Write(make([]byte, indexEntrySize)); err != nil {
+					return err
+				}
+				// Reset metadata
+				if err := t.metadata.setFlushOffset(0, true); err != nil {
+					return err
+				}
+				if err := t.metadata.setVirtualTail(0, true); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	// Create a temporary offset buffer to init files with and read indexEntry into
 	buffer := make([]byte, indexEntrySize)
 
