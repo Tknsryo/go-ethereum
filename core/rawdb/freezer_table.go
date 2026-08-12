@@ -212,13 +212,13 @@ func (t *freezerTable) repair() error {
 	// For prunable tables with missing data files, reset to empty state
 	// This handles the case where data files were manually deleted for pruning
 	if t.config.prunable {
-		// Check if head file can be opened
+		// Check if index file has entries
 		stat, err := t.index.Stat()
 		if err != nil {
 			return err
 		}
-		if stat.Size() > 0 {
-			// Index has entries, check if data files exist
+		if stat.Size() > indexEntrySize {
+			// Index has entries, check if the last referenced data file exists
 			buffer := make([]byte, indexEntrySize)
 			t.index.ReadAt(buffer, stat.Size()-indexEntrySize)
 			var lastIndex indexEntry
@@ -231,16 +231,24 @@ func (t *freezerTable) repair() error {
 			headPath := filepath.Join(t.path, headFile)
 
 			if _, err := os.Stat(headPath); os.IsNotExist(err) {
-				// Data file missing, reset index to empty
-				t.logger.Warn("Prunable table data missing, resetting to empty", "table", t.name, "file", headFile)
-				if err := truncateFreezerFile(t.index, 0); err != nil {
-					return err
+				// Data files missing, reset table to empty state
+				// Use Seek + Write instead of Truncate which can fail on some platforms
+				t.logger.Warn("Prunable table data files missing, resetting to empty", "table", t.name, "missing", headFile)
+
+				// Seek to beginning and write empty index entry
+				if _, err := t.index.Seek(0, io.SeekStart); err != nil {
+					return fmt.Errorf("seek index failed: %w", err)
 				}
-				if _, err := t.index.Write(make([]byte, indexEntrySize)); err != nil {
-					return err
+				emptyIndex := make([]byte, indexEntrySize)
+				if _, err := t.index.Write(emptyIndex); err != nil {
+					return fmt.Errorf("write empty index failed: %w", err)
+				}
+				// Ensure the file is exactly indexEntrySize bytes
+				if err := t.index.Truncate(indexEntrySize); err != nil {
+					return fmt.Errorf("truncate index failed: %w", err)
 				}
 				// Reset metadata
-				if err := t.metadata.setFlushOffset(0, true); err != nil {
+				if err := t.metadata.setFlushOffset(indexEntrySize, true); err != nil {
 					return err
 				}
 				if err := t.metadata.setVirtualTail(0, true); err != nil {
