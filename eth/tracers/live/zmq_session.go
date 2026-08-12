@@ -74,6 +74,7 @@ type ZMQSessionManager struct {
 	nextSessionID     uint32
 	maxSessions       int
 	queueSize         int
+	sendTimeout       time.Duration      // Send timeout for POLLOUT check
 	wg                sync.WaitGroup
 	mu                sync.RWMutex
 	closed            bool
@@ -97,6 +98,10 @@ type ZMQSessionManagerConfig struct {
 	BindEndpoints []string // ZMQ ROUTER endpoints (e.g., ["ipc:///tmp/geth.tracer.sock", "tcp://*:5555"])
 	QueueSize     int      // Event queue size
 	MaxSessions   int      // Maximum concurrent sessions (0 = unlimited)
+	SendTimeout   int      // Send timeout in milliseconds (0 = default 2000ms)
+	// Note: Lower SendTimeout detects disconnected clients faster but may timeout
+	// on slow networks. For local IPC, 100-500ms is fine. For remote TCP clients
+	// over unreliable networks, use 2000-5000ms or higher.
 }
 
 // NewZMQSessionManager creates a new session manager
@@ -107,6 +112,12 @@ func NewZMQSessionManager(cfg *ZMQSessionManagerConfig) (*ZMQSessionManager, err
 	}
 	if cfg.MaxSessions == 0 {
 		cfg.MaxSessions = 100
+	}
+
+	// Set send timeout (default 2 seconds for network-friendly operation)
+	sendTimeout := time.Duration(cfg.SendTimeout) * time.Millisecond
+	if cfg.SendTimeout == 0 {
+		sendTimeout = 2 * time.Second
 	}
 
 	// Get event type range from SBE-generated EventType
@@ -151,6 +162,7 @@ func NewZMQSessionManager(cfg *ZMQSessionManagerConfig) (*ZMQSessionManager, err
 		shutdownChan:      make(chan struct{}),
 		maxSessions:       cfg.MaxSessions,
 		queueSize:         cfg.QueueSize,
+		sendTimeout:       sendTimeout,
 		sessionCounts:     sessionCounts,
 		eventTypeStart:    eventTypeStart,
 		eventTypeEnd:      eventTypeEnd,
@@ -519,10 +531,11 @@ func (m *ZMQSessionManager) sendToClient(identity []byte, data []byte, socketIdx
 
 	// Check if socket is writable using Poll with POLLOUT
 	// This prevents blocking when client buffer is full or disconnected
+	// Timeout is configurable (default 2s) for network-friendly operation
 	poller := zmq.NewPoller()
 	poller.Add(socket, zmq.POLLOUT)
 
-	sockets, err := poller.Poll(100 * time.Millisecond)
+	sockets, err := poller.Poll(m.sendTimeout)
 	if err != nil {
 		return fmt.Errorf("poll failed: %w", err)
 	}
@@ -530,7 +543,7 @@ func (m *ZMQSessionManager) sendToClient(identity []byte, data []byte, socketIdx
 	// Check if socket is ready for writing
 	if len(sockets) == 0 {
 		// Socket not writable (timeout) - client likely disconnected or buffer full
-		return fmt.Errorf("socket not writable (timeout)")
+		return fmt.Errorf("socket not writable (timeout after %v)", m.sendTimeout)
 	}
 
 	// Socket is ready, send the message
@@ -587,7 +600,9 @@ func (s *Session) shouldProcessEvent(event SBEEvent) bool {
 		eventType = uint8(e.EventType)
 	case *ethereum_tracing.CallEvent:
 		eventType = uint8(e.EventType)
-	case *ethereum_tracing.BlockEvent:
+	case *ethereum_tracing.BlockStartEvent:
+		eventType = uint8(e.EventType)
+	case *ethereum_tracing.BlockEndEvent:
 		eventType = uint8(e.EventType)
 	case *ethereum_tracing.LogEvent:
 		eventType = uint8(e.EventType)

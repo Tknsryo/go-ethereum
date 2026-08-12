@@ -88,8 +88,8 @@ func TestZMQSessionManager_CreateSession(t *testing.T) {
 func TestZMQSessionManager_CleanupSession(t *testing.T) {
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{"ipc:///tmp/test.sock"},
-		QueueSize:    100,
-		MaxSessions:  10,
+		QueueSize:     100,
+		MaxSessions:   10,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -150,8 +150,8 @@ func TestZMQSessionManager_MaxSessions(t *testing.T) {
 	maxSessions := 3
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{"ipc:///tmp/test.sock"},
-		QueueSize:    100,
-		MaxSessions:  maxSessions,
+		QueueSize:     100,
+		MaxSessions:   maxSessions,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -186,8 +186,8 @@ func TestZMQSessionManager_MaxSessions(t *testing.T) {
 func TestZMQSessionManager_EventFilter(t *testing.T) {
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{"ipc:///tmp/test.sock"},
-		QueueSize:    100,
-		MaxSessions:  10,
+		QueueSize:     100,
+		MaxSessions:   10,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -212,7 +212,7 @@ func TestZMQSessionManager_EventFilter(t *testing.T) {
 		EventType: ethereum_tracing.EventType.TxStart,
 	}
 
-	blockEvent := &ethereum_tracing.BlockEvent{
+	blockEvent := &ethereum_tracing.BlockStartEvent{
 		EventType: ethereum_tracing.EventType.BlockStart,
 	}
 
@@ -231,8 +231,8 @@ func TestZMQSessionManager_EventFilter(t *testing.T) {
 func TestZMQSessionManager_ConcurrentAccess(t *testing.T) {
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{"ipc:///tmp/test.sock"},
-		QueueSize:    100,
-		MaxSessions:  100,
+		QueueSize:     100,
+		MaxSessions:   100,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -285,8 +285,8 @@ func TestZMQSessionManager_ConcurrentAccess(t *testing.T) {
 func TestZMQSessionManager_EventBroadcast(t *testing.T) {
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{"ipc:///tmp/test.sock"},
-		QueueSize:    100,
-		MaxSessions:  10,
+		QueueSize:     100,
+		MaxSessions:   10,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -319,7 +319,7 @@ func TestZMQSessionManager_EventBroadcast(t *testing.T) {
 		},
 		{
 			name: "BlockEvent",
-			event: &ethereum_tracing.BlockEvent{
+			event: &ethereum_tracing.BlockStartEvent{
 				EventType: ethereum_tracing.EventType.BlockStart,
 			},
 			shouldPro: true,
@@ -347,8 +347,8 @@ func TestZMQSessionManager_EventBroadcast(t *testing.T) {
 func TestZMQSessionManager_IsEmpty(t *testing.T) {
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{"ipc:///tmp/test.sock"},
-		QueueSize:    100,
-		MaxSessions:  10,
+		QueueSize:     100,
+		MaxSessions:   10,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -437,7 +437,7 @@ func TestSession_ShouldProcessEvent(t *testing.T) {
 			case ethereum_tracing.EventType.TxEnd:
 				event = &ethereum_tracing.TxEndEvent{EventType: tc.eventType}
 			case ethereum_tracing.EventType.BlockStart:
-				event = &ethereum_tracing.BlockEvent{EventType: tc.eventType}
+				event = &ethereum_tracing.BlockStartEvent{EventType: tc.eventType}
 			}
 
 			result := session.shouldProcessEvent(event)
@@ -447,12 +447,13 @@ func TestSession_ShouldProcessEvent(t *testing.T) {
 		})
 	}
 }
+
 // TestZMQSessionManager_PerEventTypeCount tests per-event-type session counting
 func TestZMQSessionManager_PerEventTypeCount(t *testing.T) {
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{"ipc:///tmp/test.sock"},
-		QueueSize:    100,
-		MaxSessions:  10,
+		QueueSize:     100,
+		MaxSessions:   10,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)

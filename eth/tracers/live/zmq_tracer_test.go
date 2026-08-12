@@ -163,13 +163,14 @@ func TestSBEEncoder_BlockEvent(t *testing.T) {
 	var parentHash [32]uint8
 	copy(parentHash[:], common.HexToHash("0xabcdef").Bytes())
 
-	event := &ethereum_tracing.BlockEvent{
-		EventType:     ethereum_tracing.EventType.BlockStart,
-		Timestamp:     uint64(time.Now().UnixNano()),
-		Number:        1000,
-		Hash:          hash,
-		ParentHash:    parentHash,
+	event := &ethereum_tracing.BlockStartEvent{
+		EventType:      ethereum_tracing.EventType.BlockStart,
+		Timestamp:      uint64(time.Now().UnixNano()),
+		Number:         1000,
+		Hash:           hash,
+		ParentHash:     parentHash,
 		BlockTimestamp: uint64(time.Now().Unix()),
+		TxCount:        1,
 	}
 
 	encoded, err := encoder.Encode(event)
@@ -201,6 +202,38 @@ func TestSBEEncoder_LogEvent(t *testing.T) {
 	encoded, err := encoder.Encode(event)
 	require.NoError(t, err, "Encoding should succeed")
 	assert.NotEmpty(t, encoded, "Encoded data should not be empty")
+
+	// Decode and verify field consistency
+	marshaller := ethereum_tracing.NewSbeGoMarshaller()
+	reader := bytes.NewReader(encoded)
+
+	// Decode header
+	var header ethereum_tracing.SbeGoMessageHeader
+	err = header.Decode(marshaller, reader)
+	require.NoError(t, err, "Header decode should succeed")
+
+	// Verify template ID matches LogEvent
+	assert.Equal(t, new(ethereum_tracing.LogEvent).SbeTemplateId(), header.TemplateId, "Template ID should match LogEvent")
+
+	// Decode LogEvent
+	var decodedEvent ethereum_tracing.LogEvent
+	err = decodedEvent.Decode(marshaller, reader, header.Version, header.BlockLength, true)
+	require.NoError(t, err, "Event decode should succeed")
+
+	// Verify all fields match
+	assert.Equal(t, event.EventType, decodedEvent.EventType, "EventType should match")
+	assert.Equal(t, event.Timestamp, decodedEvent.Timestamp, "Timestamp should match")
+	assert.Equal(t, event.Address, decodedEvent.Address, "Address should match")
+	assert.Equal(t, event.TopicsCount, decodedEvent.TopicsCount, "TopicsCount should match")
+
+	// Verify topics
+	require.Len(t, decodedEvent.Topics, len(event.Topics), "Topics length should match")
+	for i, topic := range event.Topics {
+		assert.Equal(t, topic.Topic, decodedEvent.Topics[i].Topic, "Topic[%d] should match", i)
+	}
+
+	// Verify log data
+	assert.Equal(t, event.LogData, decodedEvent.LogData, "LogData should match")
 }
 
 func TestSBEEncoder_SessionCreateRequest(t *testing.T) {

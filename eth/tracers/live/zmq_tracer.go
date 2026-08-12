@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -38,6 +39,11 @@ func init() {
 type zmqTracer struct {
 	sessionManager *ZMQSessionManager
 	eventChan      chan SBEEvent
+
+	// Block processing state (cached from OnBlockStart and OnBlockEndMetrics)
+	// Using atomic variables to avoid lock contention
+	blockNumber    atomic.Uint64
+	blockInsertDur atomic.Int64 // Nanoseconds
 }
 
 // zmqTracerConfig holds tracer configuration
@@ -45,6 +51,7 @@ type zmqTracerConfig struct {
 	BindEndpoints []string `json:"bindEndpoints"` // ZMQ ROUTER endpoints
 	QueueSize     int      `json:"queueSize"`     // Event queue size
 	MaxSessions   int      `json:"maxSessions"`   // Maximum concurrent sessions
+	SendTimeout   int      `json:"sendTimeout"`   // Send timeout in ms (default 2000ms)
 }
 
 // newZMQTracer creates a new ZMQ tracer instance
@@ -70,6 +77,7 @@ func newZMQTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		BindEndpoints: config.BindEndpoints,
 		QueueSize:     config.QueueSize,
 		MaxSessions:   config.MaxSessions,
+		SendTimeout:   config.SendTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session manager: %v", err)
@@ -91,14 +99,15 @@ func newZMQTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		"maxSessions", config.MaxSessions)
 
 	return &tracing.Hooks{
-		OnTxStart:    tracer.OnTxStart,
-		OnTxEnd:      tracer.OnTxEnd,
-		OnEnter:      tracer.OnEnter,
-		OnExit:       tracer.OnExit,
-		OnBlockStart: tracer.OnBlockStart,
-		OnBlockEnd:   tracer.OnBlockEnd,
-		OnLog:        tracer.OnLog,
-		OnClose:      tracer.OnClose,
+		OnTxStart:         tracer.OnTxStart,
+		OnTxEnd:           tracer.OnTxEnd,
+		OnEnter:           tracer.OnEnter,
+		OnExit:            tracer.OnExit,
+		OnBlockStart:      tracer.OnBlockStart,
+		OnBlockEnd:        tracer.OnBlockEnd,
+		OnBlockEndMetrics: tracer.OnBlockEndMetrics,
+		OnLog:             tracer.OnLog,
+		OnClose:           tracer.OnClose,
 	}, nil
 }
 
@@ -231,12 +240,15 @@ func (t *zmqTracer) OnExit(depth int, output []byte, gasUsed uint64, err error, 
 
 // OnBlockStart is called when block processing starts
 func (t *zmqTracer) OnBlockStart(event tracing.BlockEvent) {
+	b := event.Block
+
+	// Cache block number for OnBlockEndMetrics and OnBlockEnd
+	t.blockNumber.Store(b.NumberU64())
+
 	// Fast path: skip if no sessions subscribe to BlockStart events
 	if !t.sessionManager.HasSessionsForEventType(ethereum_tracing.EventType.BlockStart) {
 		return
 	}
-
-	b := event.Block
 
 	var hash [32]uint8
 	copy(hash[:], b.Hash().Bytes())
@@ -244,22 +256,57 @@ func (t *zmqTracer) OnBlockStart(event tracing.BlockEvent) {
 	var parentHash [32]uint8
 	copy(parentHash[:], b.ParentHash().Bytes())
 
-	sbeEvent := &ethereum_tracing.BlockEvent{
+	sbeEvent := &ethereum_tracing.BlockStartEvent{
 		EventType:      ethereum_tracing.EventType.BlockStart,
 		Timestamp:      uint64(time.Now().UnixNano()),
 		Number:         b.NumberU64(),
 		Hash:           hash,
 		ParentHash:     parentHash,
 		BlockTimestamp: b.Time(),
+		TxCount:        uint16(b.Transactions().Len()),
 	}
 
 	t.sendEvent(sbeEvent)
 }
 
 // OnBlockEnd is called when block processing ends
+// This is the last hook to execute (defer), responsible for sending BlockEndEvent
 func (t *zmqTracer) OnBlockEnd(err error) {
-	// BlockEnd doesn't have block info, skip for now
-	// The BlockStart event already contains all necessary information
+	// Fast path: skip if no sessions subscribe to BlockEnd events
+	if !t.sessionManager.HasSessionsForEventType(ethereum_tracing.EventType.BlockEnd) {
+		return
+	}
+
+	// Read cached values (clear after reading to avoid stale data)
+	blockNumber := t.blockNumber.Load()
+	insertDur := time.Duration(t.blockInsertDur.Load())
+
+	// Clear cached values after reading
+	t.blockNumber.Store(0)
+	t.blockInsertDur.Store(0)
+
+	// Prepare error message
+	var errorMsg []uint8
+	if err != nil {
+		errorMsg = []uint8(err.Error())
+	}
+
+	sbeEvent := &ethereum_tracing.BlockEndEvent{
+		EventType:        ethereum_tracing.EventType.BlockEnd,
+		Timestamp:        uint64(time.Now().UnixNano()),
+		Number:           blockNumber,
+		InsertDurationNs: uint64(insertDur),
+		ErrorMsg:         errorMsg,
+	}
+
+	t.sendEvent(sbeEvent)
+}
+
+// OnBlockEndMetrics is called after block processing with metrics data
+// Caches the duration for OnBlockEnd to use
+func (t *zmqTracer) OnBlockEndMetrics(blockNumber uint64, blockInsertDuration time.Duration) {
+	// Cache duration for OnBlockEnd to use
+	t.blockInsertDur.Store(int64(blockInsertDuration))
 }
 
 // OnLog is called when a log is emitted

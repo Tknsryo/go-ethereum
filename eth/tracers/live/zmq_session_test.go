@@ -41,6 +41,7 @@ func TestZMQTracer_ClientDisconnect(t *testing.T) {
 		BindEndpoints: []string{endpoint},
 		QueueSize:     100,
 		MaxSessions:   10,
+		SendTimeout: 100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -166,6 +167,7 @@ func TestZMQTracer_MultipleClients(t *testing.T) {
 		BindEndpoints: []string{endpoint},
 		QueueSize:     100,
 		MaxSessions:   10,
+		SendTimeout: 100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -260,6 +262,7 @@ func TestZMQTracer_EventFilter(t *testing.T) {
 		BindEndpoints: []string{endpoint},
 		QueueSize:     100,
 		MaxSessions:   10,
+		SendTimeout: 100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -305,7 +308,7 @@ func TestZMQTracer_EventFilter(t *testing.T) {
 	}
 
 	event, _ := parseSBEEvent(data)
-	if event.(*ethereum_tracing.BlockEvent) == nil {
+	if event.(*ethereum_tracing.BlockStartEvent) == nil {
 		t.Error("Expected BlockEvent, got other type")
 	}
 
@@ -323,8 +326,6 @@ func createTestSessionRequest() []byte {
 	req := &ethereum_tracing.SessionCreateRequest{
 		MessageType: ethereum_tracing.MessageType.SessionCreateRequest,
 		FilterMask:  0, // 接收所有事件
-		ClientID0:   12345,
-		ClientID1:   67890,
 	}
 
 	encoder := NewSBEEventEncoder()
@@ -339,8 +340,6 @@ func createTestSessionRequestWithFilter(filterMask uint32) []byte {
 	req := &ethereum_tracing.SessionCreateRequest{
 		MessageType: ethereum_tracing.MessageType.SessionCreateRequest,
 		FilterMask:  filterMask,
-		ClientID0:   12345,
-		ClientID1:   67890,
 	}
 
 	encoder := NewSBEEventEncoder()
@@ -368,20 +367,21 @@ func parseSessionResponse(data []byte) (uint32, error) {
 	return resp.SessionID, nil
 }
 
-func createTestBlockEvent() *ethereum_tracing.BlockEvent {
+func createTestBlockEvent() *ethereum_tracing.BlockStartEvent {
 	var hash, parentHash [32]uint8
 	for i := range hash {
 		hash[i] = byte(i)
 		parentHash[i] = byte(i + 1)
 	}
 
-	return &ethereum_tracing.BlockEvent{
+	return &ethereum_tracing.BlockStartEvent{
 		EventType:      ethereum_tracing.EventType.BlockStart,
 		Timestamp:      uint64(time.Now().UnixNano()),
 		Number:         12345,
 		Hash:           hash,
 		ParentHash:     parentHash,
 		BlockTimestamp: uint64(time.Now().Unix()),
+		TxCount:        1,
 	}
 }
 
@@ -407,7 +407,7 @@ func createTestTxStartEvent() *ethereum_tracing.TxStartEvent {
 	}
 }
 
-func parseBlockEvent(data []byte) (*ethereum_tracing.BlockEvent, error) {
+func parseBlockEvent(data []byte) (*ethereum_tracing.BlockStartEvent, error) {
 	marshaller := ethereum_tracing.NewSbeGoMarshaller()
 	reader := bytes.NewReader(data)
 
@@ -416,7 +416,7 @@ func parseBlockEvent(data []byte) (*ethereum_tracing.BlockEvent, error) {
 		return nil, err
 	}
 
-	var event ethereum_tracing.BlockEvent
+	var event ethereum_tracing.BlockStartEvent
 	if err := event.Decode(marshaller, reader, header.Version, header.BlockLength, true); err != nil {
 		return nil, err
 	}
@@ -440,6 +440,7 @@ func TestZMQTracer_MultipleSockets(t *testing.T) {
 		BindEndpoints: []string{endpoint1, endpoint2},
 		QueueSize:     100,
 		MaxSessions:   10,
+		SendTimeout: 100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -608,8 +609,9 @@ func TestZMQTracer_ConcurrentEventsDisconnect(t *testing.T) {
 
 	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 		BindEndpoints: []string{endpoint},
-		QueueSize:    1000,
-		MaxSessions:  10,
+		QueueSize:     1000,
+		MaxSessions:   10,
+		SendTimeout: 100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -731,8 +733,9 @@ func TestZMQTracer_MultipleEventTypesDisconnect(t *testing.T) {
 
 			sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
 				BindEndpoints: []string{endpoint},
-				QueueSize:    100,
-				MaxSessions:  10,
+				QueueSize:     100,
+				MaxSessions:   10,
+		SendTimeout: 100, // Fast timeout for tests
 			})
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
@@ -851,8 +854,8 @@ func parseSBEEvent(data []byte) (interface{}, error) {
 
 	// 根据模板ID解析不同类型
 	switch header.TemplateId {
-	case new(ethereum_tracing.BlockEvent).SbeTemplateId():
-		var event ethereum_tracing.BlockEvent
+	case new(ethereum_tracing.BlockStartEvent).SbeTemplateId():
+		var event ethereum_tracing.BlockStartEvent
 		err := event.Decode(marshaller, reader, header.Version, header.BlockLength, true)
 		return &event, err
 	case new(ethereum_tracing.TxStartEvent).SbeTemplateId():

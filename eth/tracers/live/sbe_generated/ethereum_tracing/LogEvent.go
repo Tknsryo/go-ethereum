@@ -211,7 +211,7 @@ func (*LogEvent) SbeBlockLength() (blockLength uint16) {
 }
 
 func (*LogEvent) SbeTemplateId() (templateId uint16) {
-	return 14
+	return 15
 }
 
 func (*LogEvent) SbeSchemaId() (schemaId uint16) {
