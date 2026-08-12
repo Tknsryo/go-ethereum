@@ -18,6 +18,8 @@ package live
 
 import (
 	"bytes"
+	"encoding/hex"
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -236,17 +238,101 @@ func TestSBEEncoder_LogEvent(t *testing.T) {
 	assert.Equal(t, event.LogData, decodedEvent.LogData, "LogData should match")
 }
 
+func TestSBEEncoder_DecodeRawMessage(t *testing.T) {
+	// Hex data from user
+	hexData := "050014000100010001e00000001400021f7d7550b1b028f7571e69a784071f0205fd2efa8366a39cc670b4001a1121b8f6a443a643e409510000042000021c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67200000200000200000"
+
+	data, err := hex.DecodeString(hexData)
+	require.NoError(t, err, "Hex decode should succeed")
+
+	// Decode header
+	m := ethereum_tracing.NewSbeGoMarshaller()
+	buf := bytes.NewBuffer(data)
+
+	var header ethereum_tracing.SbeGoMessageHeader
+	err = header.Decode(m, buf)
+	require.NoError(t, err, "Header decode should succeed")
+	assert.Equal(t, uint16(20), header.TemplateId, "TemplateId should be 20 (SessionCreateRequest)")
+
+	// Decode message
+	// Note: Range check disabled because Hash/Address are raw byte arrays
+	// where each byte can be 0-255 (no null value reservation needed)
+	var req ethereum_tracing.SessionCreateRequest
+	err = req.Decode(m, buf, header.Version, header.BlockLength, false)
+	require.NoError(t, err, "SessionCreateRequest decode should succeed")
+
+	// Print decoded fields
+	t.Logf("MessageType: %v", req.MessageType)
+	t.Logf("FilterMask: 0x%x", req.FilterMask)
+	t.Logf("AddressFilter count: %d", len(req.AddressFilter))
+	for i, addr := range req.AddressFilter {
+		t.Logf("  Address[%d]: %x", i, addr.Address)
+	}
+	t.Logf("TopicsFilter count: %d", len(req.TopicsFilter))
+	for i, tf := range req.TopicsFilter {
+		t.Logf("  Position %d topics: %d", i, len(tf.Topics))
+		for j, topic := range tf.Topics {
+			t.Logf("    Topic[%d]: %x", j, topic.Topic)
+		}
+	}
+}
+
 func TestSBEEncoder_SessionCreateRequest(t *testing.T) {
 	encoder := NewSBEEventEncoder()
 
+	// Test with nested TopicsFilter
 	event := &ethereum_tracing.SessionCreateRequest{
 		MessageType: ethereum_tracing.MessageType.SessionCreateRequest,
-		FilterMask:  0,
+		FilterMask:  0x7F, // Subscribe to all event types
+		AddressFilter: []ethereum_tracing.SessionCreateRequestAddressFilter{
+			{Address: [20]uint8{1, 2, 3}},
+			{Address: [20]uint8{4, 5, 6}},
+		},
+		TopicsFilter: []ethereum_tracing.SessionCreateRequestTopicsFilter{
+			{
+				// Position 0: match topic A or B
+				Topics: []ethereum_tracing.SessionCreateRequestTopicsFilterTopics{
+					{Topic: [32]uint8{0xc, 0xc, 0xb}}, // Topic A
+					{Topic: [32]uint8{2}},             // Topic B
+				},
+			},
+			{
+				// Position 1: match any topic (wildcard - empty Topics)
+				Topics: []ethereum_tracing.SessionCreateRequestTopicsFilterTopics{},
+			},
+		},
 	}
 
 	encoded, err := encoder.Encode(event)
 	require.NoError(t, err, "Encoding should succeed")
 	assert.NotEmpty(t, encoded, "Encoded data should not be empty")
+	fmt.Println(hex.EncodeToString(encoded))
+
+	// Decode and verify
+	m := ethereum_tracing.NewSbeGoMarshaller()
+	buf := bytes.NewBuffer(encoded)
+
+	var header ethereum_tracing.SbeGoMessageHeader
+	err = header.Decode(m, buf)
+	require.NoError(t, err, "Header decode should succeed")
+
+	var decoded ethereum_tracing.SessionCreateRequest
+	err = decoded.Decode(m, buf, header.Version, header.BlockLength, true)
+	require.NoError(t, err, "Request decode should succeed")
+
+	// Verify fields
+	assert.Equal(t, event.MessageType, decoded.MessageType)
+	assert.Equal(t, event.FilterMask, decoded.FilterMask)
+	assert.Len(t, decoded.AddressFilter, 2, "Should have 2 address filters")
+	assert.Len(t, decoded.TopicsFilter, 2, "Should have 2 topic filter positions")
+
+	// Verify position 0 has 2 topics
+	assert.Len(t, decoded.TopicsFilter[0].Topics, 2, "Position 0 should have 2 topics")
+	assert.Equal(t, [32]uint8{0xc, 0xc, 0xb}, decoded.TopicsFilter[0].Topics[0].Topic)
+	assert.Equal(t, [32]uint8{2}, decoded.TopicsFilter[0].Topics[1].Topic)
+
+	// Verify position 1 is empty (wildcard)
+	assert.Len(t, decoded.TopicsFilter[1].Topics, 0, "Position 1 should be empty (wildcard)")
 }
 
 func TestSBEEncoder_SessionCreateResponse(t *testing.T) {

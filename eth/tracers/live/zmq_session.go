@@ -314,7 +314,7 @@ func (m *ZMQSessionManager) processMessage(identity []byte, data []byte, socketI
 	// Decode message header
 	var header ethereum_tracing.SbeGoMessageHeader
 	if err := header.Decode(marshaller, reader); err != nil {
-		return m.encodeErrorResponse("failed to decode header")
+		return m.encodeErrorResponse("failed to decode header: " + err.Error())
 	}
 
 	// Check message type from templateId
@@ -334,13 +334,15 @@ func (m *ZMQSessionManager) handleSessionCreate(identity []byte, data []byte, so
 	// Decode header
 	var header ethereum_tracing.SbeGoMessageHeader
 	if err := header.Decode(marshaller, reader); err != nil {
-		return m.encodeErrorResponse("failed to decode header")
+		return m.encodeErrorResponse("failed to decode header: " + err.Error())
 	}
 
 	// Decode SessionCreateRequest
+	// Note: Range check disabled because Hash/Address are raw byte arrays
+	// where each byte can be 0-255 (no null value reservation needed)
 	var req ethereum_tracing.SessionCreateRequest
-	if err := req.Decode(marshaller, reader, header.Version, header.BlockLength, true); err != nil {
-		return m.encodeErrorResponse("failed to decode request")
+	if err := req.Decode(marshaller, reader, header.Version, header.BlockLength, false); err != nil {
+		return m.encodeErrorResponse("failed to decode request: " + err.Error())
 	}
 
 	// Validate request
@@ -759,7 +761,7 @@ func (m *ZMQSessionManager) encodeSuccessResponse(sessionID uint32, endpoint str
 	if err != nil {
 		// This should never happen, but fallback
 		log.Error("Failed to encode success response", "error", err)
-		return m.encodeErrorResponse("encoding error")
+		return m.encodeErrorResponse("encoding error: " + err.Error())
 	}
 	return encoded
 }
