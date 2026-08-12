@@ -601,6 +601,245 @@ func TestZMQTracer_MultipleSockets(t *testing.T) {
 	}
 }
 
+// TestZMQTracer_ConcurrentEventsDisconnect tests concurrent event broadcasting with session cleanup
+// This tests the race condition when multiple events are sent concurrently
+func TestZMQTracer_ConcurrentEventsDisconnect(t *testing.T) {
+	endpoint := fmt.Sprintf("ipc:///tmp/test_concurrent_%d.sock", time.Now().UnixNano())
+
+	sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
+		BindEndpoints: []string{endpoint},
+		QueueSize:    1000,
+		MaxSessions:  10,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	if err := sessionMgr.Start(); err != nil {
+		t.Fatalf("Failed to start session manager: %v", err)
+	}
+	defer sessionMgr.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Subscribe to multiple event types: TxStart(1) + BlockStart(5)
+	filterMask := uint32((1 << 1) | (1 << 5))
+	t.Logf("Client subscribing to TxStart(1) + BlockStart(5), filterMask=%d", filterMask)
+
+	client, err := zmq.NewSocket(zmq.DEALER)
+	if err != nil {
+		t.Fatalf("Failed to create client socket: %v", err)
+	}
+	clientIdentity := fmt.Sprintf("concurrent-client-%d", time.Now().UnixNano())
+	client.SetIdentity(clientIdentity)
+	client.Connect(endpoint)
+
+	request := createTestSessionRequestWithFilter(filterMask)
+	client.SendBytes(request, 0)
+	response, _ := client.RecvBytes(0)
+	sessionID, _ := parseSessionResponse(response)
+	t.Logf("Session %d created", sessionID)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Start goroutine to send events concurrently
+	numEvents := 50
+	go func() {
+		for i := 0; i < numEvents; i++ {
+			// Alternate between TxStart and BlockStart
+			if i%2 == 0 {
+				event := createTestTxStartEvent()
+				sessionMgr.eventChan <- event
+			} else {
+				event := createTestBlockEvent()
+				event.Number = uint64(1000 + i)
+				sessionMgr.eventChan <- event
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	// Client receives some events
+	client.SetRcvtimeo(1 * time.Second)
+	receivedCount := 0
+	for i := 0; i < numEvents/2; i++ {
+		_, err := client.RecvBytes(0)
+		if err == nil {
+			receivedCount++
+		}
+	}
+	t.Logf("Client received %d events", receivedCount)
+
+	// Disconnect client while events are still being sent
+	t.Log("Client disconnecting during event broadcast...")
+	client.Close()
+
+	// Wait for remaining events to be sent
+	time.Sleep(1 * time.Second)
+
+	// Verify session is cleaned up
+	if sessionMgr.SessionCount() != 0 {
+		t.Errorf("Expected 0 sessions after disconnect, got %d", sessionMgr.SessionCount())
+
+		sessionMgr.mu.RLock()
+		for id, sess := range sessionMgr.sessions {
+			t.Errorf("Session %d still exists, filterMask=%d", id, sess.filterMask)
+		}
+		sessionMgr.mu.RUnlock()
+	}
+
+	// Verify per-event-type counts
+	for eventType := 1; eventType <= 7; eventType++ {
+		count := sessionMgr.sessionCounts[eventType].Load()
+		if count != 0 {
+			t.Errorf("Event type %d count should be 0, got %d", eventType, count)
+		}
+	}
+
+	if !sessionMgr.IsEmpty() {
+		t.Error("Expected IsEmpty to return true")
+	}
+
+	t.Log("Concurrent event test completed successfully")
+}
+
+// TestZMQTracer_MultipleEventTypesDisconnect tests session cleanup when client subscribes to multiple event types
+// Bug scenario: Client subscribes to TxStart + BlockStart (filterMask > 1)
+// When client disconnects, session should be cleaned up correctly
+func TestZMQTracer_MultipleEventTypesDisconnect(t *testing.T) {
+	// Test both scenarios
+	testCases := []struct {
+		name        string
+		filterMask  uint32
+		description string
+	}{
+		{
+			name:        "TxStart_Plus_BlockStart_BothSend",
+			filterMask:  (1 << 1) | (1 << 5), // TxStart(1) + BlockStart(5)
+			description: "Both event types send events - potential race condition",
+		},
+		{
+			name:        "TxStart_Plus_BlockEnd_OneNoSend",
+			filterMask:  (1 << 1) | (1 << 6), // TxStart(1) + BlockEnd(6)
+			description: "BlockEnd doesn't send events - should work correctly",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := fmt.Sprintf("ipc:///tmp/test_multi_%s_%d.sock", tc.name, time.Now().UnixNano())
+
+			sessionMgr, err := NewZMQSessionManager(&ZMQSessionManagerConfig{
+				BindEndpoints: []string{endpoint},
+				QueueSize:    100,
+				MaxSessions:  10,
+			})
+			if err != nil {
+				t.Fatalf("Failed to create session manager: %v", err)
+			}
+
+			if err := sessionMgr.Start(); err != nil {
+				t.Fatalf("Failed to start session manager: %v", err)
+			}
+			defer sessionMgr.Stop()
+
+			time.Sleep(100 * time.Millisecond)
+
+			t.Logf("Testing: %s, filterMask=%d", tc.description, tc.filterMask)
+
+			client, err := zmq.NewSocket(zmq.DEALER)
+			if err != nil {
+				t.Fatalf("Failed to create client socket: %v", err)
+			}
+			clientIdentity := fmt.Sprintf("client-%s-%d", tc.name, time.Now().UnixNano())
+			client.SetIdentity(clientIdentity)
+			client.Connect(endpoint)
+
+			// Create session with filter
+			request := createTestSessionRequestWithFilter(tc.filterMask)
+			client.SendBytes(request, 0)
+
+			response, _ := client.RecvBytes(0)
+			sessionID, _ := parseSessionResponse(response)
+			t.Logf("Session %d created with filterMask=%d", sessionID, tc.filterMask)
+
+			time.Sleep(100 * time.Millisecond)
+
+			// Verify initial counts
+			if sessionMgr.SessionCount() != 1 {
+				t.Fatalf("Expected 1 session, got %d", sessionMgr.SessionCount())
+			}
+
+			// Send multiple events rapidly to trigger potential race condition
+			txEvent := createTestTxStartEvent()
+			sessionMgr.eventChan <- txEvent
+			t.Log("Sent TxStart event")
+
+			// Small delay to ensure event is queued
+			time.Sleep(10 * time.Millisecond)
+
+			blockEvent := createTestBlockEvent()
+			blockEvent.Number = 11111
+			sessionMgr.eventChan <- blockEvent
+			t.Log("Sent BlockStart event")
+
+			// Receive events
+			client.SetRcvtimeo(1 * time.Second)
+			for i := 0; i < 2; i++ {
+				_, err := client.RecvBytes(0)
+				if err != nil {
+					t.Logf("Receive event %d: %v", i, err)
+				}
+			}
+
+			// Disconnect client during event processing
+			t.Log("Client disconnecting...")
+			client.Close()
+
+			// Wait for ZMQ to detect disconnect
+			time.Sleep(100 * time.Millisecond)
+
+			// Send trigger event for disconnect detection
+			// Use TxStart event because client subscribes to TxStart
+			triggerEvent := createTestTxStartEvent()
+			sessionMgr.eventChan <- triggerEvent
+			t.Log("Sent TxStart trigger event for disconnect detection")
+
+			// Wait for cleanup
+			time.Sleep(500 * time.Millisecond)
+
+			// Verify session is cleaned up
+			if sessionMgr.SessionCount() != 0 {
+				t.Errorf("Expected 0 sessions after disconnect, got %d", sessionMgr.SessionCount())
+
+				// Debug: check what's in the session map
+				sessionMgr.mu.RLock()
+				for id, sess := range sessionMgr.sessions {
+					t.Errorf("Session %d still exists, filterMask=%d", id, sess.filterMask)
+				}
+				sessionMgr.mu.RUnlock()
+			}
+
+			// Verify per-event-type counts based on filterMask
+			for eventType := 1; eventType <= 7; eventType++ {
+				if (tc.filterMask & (1 << eventType)) != 0 {
+					// This event type was subscribed
+					count := sessionMgr.sessionCounts[eventType].Load()
+					if count != 0 {
+						t.Errorf("Event type %d count should be 0, got %d", eventType, count)
+					}
+				}
+			}
+
+			if !sessionMgr.IsEmpty() {
+				t.Errorf("Expected IsEmpty to return true, filterMask=%d", tc.filterMask)
+			}
+
+			t.Logf("Session cleanup verified for %s", tc.name)
+		})
+	}
+}
+
 func parseSBEEvent(data []byte) (interface{}, error) {
 	marshaller := ethereum_tracing.NewSbeGoMarshaller()
 	reader := bytes.NewReader(data)

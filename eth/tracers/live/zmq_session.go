@@ -65,31 +65,31 @@ func getEventTypeRange() (int, int) {
 
 // ZMQSessionManager manages client sessions and distributes events
 type ZMQSessionManager struct {
-	routerSockets    []*zmq.Socket      // Multiple ROUTER sockets for all communication
-	bindEndpoints    []string           // ROUTER socket endpoints
-	sessions         map[uint32]*Session
+	routerSockets     []*zmq.Socket // Multiple ROUTER sockets for all communication
+	bindEndpoints     []string      // ROUTER socket endpoints
+	sessions          map[uint32]*Session
 	identityToSession map[string]*Session // Identity -> Session mapping
-	eventChan        chan SBEEvent      // Ingress channel from hooks
-	shutdownChan     chan struct{}      // Global shutdown signal
-	nextSessionID    uint32
-	maxSessions      int
-	queueSize        int
-	wg               sync.WaitGroup
-	mu               sync.RWMutex
-	closed           bool
-	sessionCounts    []atomic.Int64     // Per-event-type session count (dynamic size)
-	eventTypeStart   int                // First valid event type (from reflection)
-	eventTypeEnd     int                // One past last event type (from reflection)
-	encoder          *SBEEventEncoder   // Shared encoder
+	eventChan         chan SBEEvent       // Ingress channel from hooks
+	shutdownChan      chan struct{}       // Global shutdown signal
+	nextSessionID     uint32
+	maxSessions       int
+	queueSize         int
+	wg                sync.WaitGroup
+	mu                sync.RWMutex
+	closed            bool
+	sessionCounts     []atomic.Int64   // Per-event-type session count (dynamic size)
+	eventTypeStart    int              // First valid event type (from reflection)
+	eventTypeEnd      int              // One past last event type (from reflection)
+	encoder           *SBEEventEncoder // Shared encoder
 }
 
 // Session represents a single client session
 type Session struct {
-	ID           uint32
-	identity     []byte             // Client identity (for ROUTER routing)
-	filterMask   uint32             // Event type filter
-	socketIndex  int                // Index of ROUTER socket this session belongs to
-	manager      *ZMQSessionManager
+	ID          uint32
+	identity    []byte // Client identity (for ROUTER routing)
+	filterMask  uint32 // Event type filter
+	socketIndex int    // Index of ROUTER socket this session belongs to
+	manager     *ZMQSessionManager
 }
 
 // ZMQSessionManagerConfig holds configuration for session manager
@@ -143,18 +143,18 @@ func NewZMQSessionManager(cfg *ZMQSessionManagerConfig) (*ZMQSessionManager, err
 	}
 
 	return &ZMQSessionManager{
-		routerSockets:    routerSockets,
-		bindEndpoints:    bindEndpoints,
-		sessions:         make(map[uint32]*Session),
+		routerSockets:     routerSockets,
+		bindEndpoints:     bindEndpoints,
+		sessions:          make(map[uint32]*Session),
 		identityToSession: make(map[string]*Session),
-		eventChan:        make(chan SBEEvent, cfg.QueueSize),
-		shutdownChan:     make(chan struct{}),
-		maxSessions:      cfg.MaxSessions,
-		queueSize:        cfg.QueueSize,
-		sessionCounts:    sessionCounts,
-		eventTypeStart:   eventTypeStart,
-		eventTypeEnd:     eventTypeEnd,
-		encoder:          NewSBEEventEncoder(),
+		eventChan:         make(chan SBEEvent, cfg.QueueSize),
+		shutdownChan:      make(chan struct{}),
+		maxSessions:       cfg.MaxSessions,
+		queueSize:         cfg.QueueSize,
+		sessionCounts:     sessionCounts,
+		eventTypeStart:    eventTypeStart,
+		eventTypeEnd:      eventTypeEnd,
+		encoder:           NewSBEEventEncoder(),
 	}, nil
 }
 
@@ -508,7 +508,7 @@ func (m *ZMQSessionManager) broadcastEvent(event SBEEvent) {
 }
 
 // sendToClient sends a message to a specific client via ROUTER socket
-// Returns error if client is disconnected (EHOSTUNREACH)
+// Returns error if client is disconnected (EHOSTUNREACH) or socket not writable
 func (m *ZMQSessionManager) sendToClient(identity []byte, data []byte, socketIdx int) error {
 	// Validate socket index
 	if socketIdx < 0 || socketIdx >= len(m.routerSockets) {
@@ -517,6 +517,23 @@ func (m *ZMQSessionManager) sendToClient(identity []byte, data []byte, socketIdx
 
 	socket := m.routerSockets[socketIdx]
 
+	// Check if socket is writable using Poll with POLLOUT
+	// This prevents blocking when client buffer is full or disconnected
+	poller := zmq.NewPoller()
+	poller.Add(socket, zmq.POLLOUT)
+
+	sockets, err := poller.Poll(100 * time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("poll failed: %w", err)
+	}
+
+	// Check if socket is ready for writing
+	if len(sockets) == 0 {
+		// Socket not writable (timeout) - client likely disconnected or buffer full
+		return fmt.Errorf("socket not writable (timeout)")
+	}
+
+	// Socket is ready, send the message
 	// ROUTER send format: [identity][data]
 	// Note: No delimiter needed for DEALER clients
 	// First send identity with SNDMORE flag
@@ -619,11 +636,11 @@ func (m *ZMQSessionManager) Stop() {
 	// This avoids assertion failure in ZeroMQ when closing while RecvBytes is blocked
 	m.wg.Wait()
 
-		// Now safe to close all sockets (no goroutines using them)
-		for _, socket := range m.routerSockets {
-			socket.SetLinger(0)
-			socket.Close()
-		}
+	// Now safe to close all sockets (no goroutines using them)
+	for _, socket := range m.routerSockets {
+		socket.SetLinger(0)
+		socket.Close()
+	}
 
 	log.Info("ZMQ tracer session manager stopped")
 }
