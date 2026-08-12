@@ -74,7 +74,7 @@ type ZMQSessionManager struct {
 	nextSessionID     uint32
 	maxSessions       int
 	queueSize         int
-	sendTimeout       time.Duration      // Send timeout for POLLOUT check
+	sendTimeout       time.Duration // Send timeout for POLLOUT check
 	wg                sync.WaitGroup
 	mu                sync.RWMutex
 	closed            bool
@@ -91,6 +91,11 @@ type Session struct {
 	filterMask  uint32 // Event type filter
 	socketIndex int    // Index of ROUTER socket this session belongs to
 	manager     *ZMQSessionManager
+
+	// LogEvent specific filters (eth_getLogs style)
+	// Using byte arrays for efficient comparison without hex conversion
+	logAddressFilter map[[20]byte]bool   // nil/empty = accept all addresses
+	logTopicsFilter  []map[[32]byte]bool // nil/empty = accept all topics, supports empty map as wildcard
 }
 
 // ZMQSessionManagerConfig holds configuration for session manager
@@ -438,13 +443,41 @@ func (m *ZMQSessionManager) createSession(identity []byte, req *ethereum_tracing
 	sessionID := m.nextSessionID
 	m.nextSessionID++
 
+	// Build log address filter (eth_getLogs style)
+	var logAddressFilter map[[20]byte]bool
+	if len(req.AddressFilter) > 0 {
+		logAddressFilter = make(map[[20]byte]bool)
+		for _, addr := range req.AddressFilter {
+			logAddressFilter[addr.Address] = true
+		}
+	}
+
+	// Build log topics filter (eth_getLogs style)
+	// Each position in the outer slice represents a topic position
+	// Empty map at position i means "match any topic at position i"
+	var logTopicsFilter []map[[32]byte]bool
+	if len(req.TopicsFilter) > 0 {
+		logTopicsFilter = make([]map[[32]byte]bool, len(req.TopicsFilter))
+		for i, topicFilter := range req.TopicsFilter {
+			if len(topicFilter.Topics) > 0 {
+				logTopicsFilter[i] = make(map[[32]byte]bool)
+				for _, topic := range topicFilter.Topics {
+					logTopicsFilter[i][topic.Topic] = true
+				}
+			}
+			// Empty TopicsFilter[i].Topics means empty map = match any topic at position i
+		}
+	}
+
 	// Create session
 	session := &Session{
-		ID:          sessionID,
-		identity:    identity,
-		filterMask:  req.FilterMask,
-		socketIndex: socketIdx,
-		manager:     m,
+		ID:               sessionID,
+		identity:         identity,
+		filterMask:       req.FilterMask,
+		socketIndex:      socketIdx,
+		manager:          m,
+		logAddressFilter: logAddressFilter,
+		logTopicsFilter:  logTopicsFilter,
 	}
 
 	m.sessions[sessionID] = session
@@ -587,10 +620,6 @@ func (m *ZMQSessionManager) cleanupSession(identity []byte) {
 
 // shouldProcessEvent checks if event passes the filter
 func (s *Session) shouldProcessEvent(event SBEEvent) bool {
-	if s.filterMask == 0 {
-		return true // No filter, accept all
-	}
-
 	// Extract event type from SBE event
 	var eventType uint8
 	switch e := event.(type) {
@@ -606,11 +635,52 @@ func (s *Session) shouldProcessEvent(event SBEEvent) bool {
 		eventType = uint8(e.EventType)
 	case *ethereum_tracing.LogEvent:
 		eventType = uint8(e.EventType)
+		// LogEvent has additional filtering (eth_getLogs style)
+		if !s.shouldProcessLogEvent(e) {
+			return false
+		}
 	default:
 		return false // Unknown event type
 	}
 
+	// Check event type filter
+	if s.filterMask == 0 {
+		return true // No filter, accept all
+	}
+
 	return (s.filterMask & (1 << eventType)) != 0
+}
+
+// shouldProcessLogEvent checks if LogEvent passes address and topic filters (eth_getLogs style)
+func (s *Session) shouldProcessLogEvent(log *ethereum_tracing.LogEvent) bool {
+	// Check address filter
+	if len(s.logAddressFilter) > 0 {
+		if !s.logAddressFilter[log.Address] {
+			return false
+		}
+	}
+
+	// Check topics filter (eth_getLogs style with wildcard support)
+	if len(s.logTopicsFilter) > 0 {
+		for i, topicFilter := range s.logTopicsFilter {
+			// Topic filter position exceeds log topics count
+			if i >= int(log.TopicsCount) {
+				return false
+			}
+
+			// Empty map at this position = match any topic (wildcard)
+			if len(topicFilter) == 0 {
+				continue
+			}
+
+			// Check if log topic is in the filter map
+			if !topicFilter[log.Topics[i].Topic] {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // IsEmpty returns true if there are no active sessions

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/eth/tracers/live/sbe_generated/ethereum_tracing"
+	"github.com/stretchr/testify/assert"
 	zmq "gopkg.in/pebbe/zmq4.v1"
 )
 
@@ -865,4 +866,152 @@ func parseSBEEvent(data []byte) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("unknown template id: %d", header.TemplateId)
 	}
+}
+
+func TestSession_LogEventFilter(t *testing.T) {
+	// Test 1: Address filter
+	t.Run("AddressFilter", func(t *testing.T) {
+		// Create session with address filter
+		targetAddr := [20]uint8{1, 2, 3}
+		otherAddr := [20]uint8{4, 5, 6}
+
+		session := &Session{
+			ID:               1,
+			filterMask:       uint32(1 << ethereum_tracing.EventType.Log),
+			logAddressFilter: map[[20]byte]bool{targetAddr: true},
+		}
+
+		// Should accept log with matching address
+		logMatch := &ethereum_tracing.LogEvent{
+			EventType: ethereum_tracing.EventType.Log,
+			Address:   targetAddr,
+		}
+		assert.True(t, session.shouldProcessEvent(logMatch), "Should accept matching address")
+
+		// Should reject log with different address
+		logNoMatch := &ethereum_tracing.LogEvent{
+			EventType: ethereum_tracing.EventType.Log,
+			Address:   otherAddr,
+		}
+		assert.False(t, session.shouldProcessEvent(logNoMatch), "Should reject non-matching address")
+	})
+
+	// Test 2: Topics filter
+	t.Run("TopicsFilter", func(t *testing.T) {
+		topic1 := [32]uint8{1}
+		topic2 := [32]uint8{2}
+		topic3 := [32]uint8{3}
+
+		session := &Session{
+			ID:         1,
+			filterMask: uint32(1 << ethereum_tracing.EventType.Log),
+			// Filter: position 0 must be topic1, position 1 can be any topic (wildcard)
+			logTopicsFilter: []map[[32]byte]bool{
+				{topic1: true}, // Position 0: must match topic1
+				{},             // Position 1: empty map = match any topic (wildcard)
+			},
+		}
+
+		// Should accept: position 0 matches topic1, position 1 is any
+		logMatch := &ethereum_tracing.LogEvent{
+			EventType:   ethereum_tracing.EventType.Log,
+			TopicsCount: 2,
+			Topics: []ethereum_tracing.LogEventTopics{
+				{Topic: topic1},
+				{Topic: topic2},
+			},
+		}
+		assert.True(t, session.shouldProcessEvent(logMatch), "Should accept matching topics")
+
+		// Should reject: position 0 doesn't match topic1
+		logNoMatch := &ethereum_tracing.LogEvent{
+			EventType:   ethereum_tracing.EventType.Log,
+			TopicsCount: 2,
+			Topics: []ethereum_tracing.LogEventTopics{
+				{Topic: topic2},
+				{Topic: topic3},
+			},
+		}
+		assert.False(t, session.shouldProcessEvent(logNoMatch), "Should reject non-matching topic at position 0")
+
+		// Should reject: not enough topics (filter expects 2 positions)
+		logTooFewTopics := &ethereum_tracing.LogEvent{
+			EventType:   ethereum_tracing.EventType.Log,
+			TopicsCount: 1,
+			Topics: []ethereum_tracing.LogEventTopics{
+				{Topic: topic1},
+			},
+		}
+		assert.False(t, session.shouldProcessEvent(logTooFewTopics), "Should reject log with fewer topics than filter")
+	})
+
+	// Test 3: Combined address + topics filter
+	t.Run("CombinedFilter", func(t *testing.T) {
+		targetAddr := [20]uint8{1, 2, 3}
+		otherAddr := [20]uint8{4, 5, 6}
+		topic1 := [32]uint8{1}
+
+		session := &Session{
+			ID:         1,
+			filterMask: uint32(1 << ethereum_tracing.EventType.Log),
+			logAddressFilter: map[[20]byte]bool{
+				targetAddr: true,
+			},
+			logTopicsFilter: []map[[32]byte]bool{
+				{topic1: true},
+			},
+		}
+
+		// Should accept: both address and topic match
+		logMatch := &ethereum_tracing.LogEvent{
+			EventType:   ethereum_tracing.EventType.Log,
+			Address:     targetAddr,
+			TopicsCount: 1,
+			Topics: []ethereum_tracing.LogEventTopics{
+				{Topic: topic1},
+			},
+		}
+		assert.True(t, session.shouldProcessEvent(logMatch), "Should accept when both filters match")
+
+		// Should reject: address matches but topic doesn't
+		logTopicNoMatch := &ethereum_tracing.LogEvent{
+			EventType:   ethereum_tracing.EventType.Log,
+			Address:     targetAddr,
+			TopicsCount: 1,
+			Topics: []ethereum_tracing.LogEventTopics{
+				{Topic: [32]uint8{2}},
+			},
+		}
+		assert.False(t, session.shouldProcessEvent(logTopicNoMatch), "Should reject when topic doesn't match")
+
+		// Should reject: topic matches but address doesn't
+		logAddrNoMatch := &ethereum_tracing.LogEvent{
+			EventType:   ethereum_tracing.EventType.Log,
+			Address:     otherAddr,
+			TopicsCount: 1,
+			Topics: []ethereum_tracing.LogEventTopics{
+				{Topic: topic1},
+			},
+		}
+		assert.False(t, session.shouldProcessEvent(logAddrNoMatch), "Should reject when address doesn't match")
+	})
+
+	// Test 4: No filters (accept all)
+	t.Run("NoFilter", func(t *testing.T) {
+		session := &Session{
+			ID:         1,
+			filterMask: uint32(1 << ethereum_tracing.EventType.Log),
+		}
+
+		log := &ethereum_tracing.LogEvent{
+			EventType:   ethereum_tracing.EventType.Log,
+			Address:     [20]uint8{1, 2, 3},
+			TopicsCount: 2,
+			Topics: []ethereum_tracing.LogEventTopics{
+				{Topic: [32]uint8{1}},
+				{Topic: [32]uint8{2}},
+			},
+		}
+		assert.True(t, session.shouldProcessEvent(log), "Should accept all logs when no filter set")
+	})
 }
