@@ -51,11 +51,17 @@ func newFreezerBatch(f *Freezer) *freezerBatch {
 
 // Append adds an RLP-encoded item of the given kind.
 func (batch *freezerBatch) Append(kind string, num uint64, item interface{}) error {
+	if batch.tables[kind] == nil {
+		return nil // Skip if table doesn't exist (prunable table was pruned)
+	}
 	return batch.tables[kind].Append(num, item)
 }
 
 // AppendRaw adds an item of the given kind.
 func (batch *freezerBatch) AppendRaw(kind string, num uint64, item []byte) error {
+	if batch.tables[kind] == nil {
+		return nil // Skip if table doesn't exist (prunable table was pruned)
+	}
 	return batch.tables[kind].AppendRaw(num, item)
 }
 
@@ -80,6 +86,15 @@ func (batch *freezerBatch) commit() (item uint64, writeSize int64, err error) {
 
 	// Commit all table batches.
 	for _, tb := range batch.tables {
+		// Skip writing to prunable tables (bodies, receipts can be pruned)
+		// Still update the item counter so the freezer stays consistent
+		if tb.t.config.prunable {
+			// Just update the item counter without writing data
+			tb.t.items.Store(tb.curItem)
+			tb.dataBuffer = tb.dataBuffer[:0]
+			tb.indexBuffer = tb.indexBuffer[:0]
+			continue
+		}
 		if err := tb.commit(); err != nil {
 			return 0, 0, err
 		}

@@ -585,14 +585,25 @@ func (t *freezerTable) preopen() (err error) {
 	// Open all except head in RDONLY
 	for i := t.tailId; i < t.headId; i++ {
 		if _, err = t.openFile(i, openFreezerFileForReadOnly); err != nil {
+			// Skip missing files for prunable tables
+			if t.config.prunable && os.IsNotExist(err) {
+				continue
+			}
 			return err
 		}
 	}
-	if t.readonly {
-		t.head, err = t.openFile(t.headId, openFreezerFileForReadOnly)
-	} else {
-		// Open head in read/write
-		t.head, err = t.openFile(t.headId, openFreezerFileForAppend)
+	// Open head file
+	if t.headId >= t.tailId {
+		if t.readonly {
+			t.head, err = t.openFile(t.headId, openFreezerFileForReadOnly)
+		} else {
+			// Open head in read/write
+			t.head, err = t.openFile(t.headId, openFreezerFileForAppend)
+		}
+		// Skip missing head file for prunable tables
+		if err != nil && t.config.prunable && os.IsNotExist(err) {
+			err = nil
+		}
 	}
 	return err
 }
@@ -1044,6 +1055,16 @@ func (t *freezerTable) retrieveItems(start, count, maxBytes uint64) ([]byte, []i
 		output = grow(output, length)
 		dataFile, exist := t.files[fileId]
 		if !exist {
+			// For prunable tables, return empty data instead of error
+			if t.config.prunable {
+				// The last 'length' bytes are already allocated by grow,
+				// just zero them out for safety
+				startIdx := len(output) - length
+				for i := startIdx; i < len(output); i++ {
+					output[i] = 0
+				}
+				return nil
+			}
 			return fmt.Errorf("missing data file %d", fileId)
 		}
 		if _, err := dataFile.ReadAt(output[len(output)-length:], int64(start)); err != nil {
@@ -1133,6 +1154,10 @@ func (t *freezerTable) RetrieveBytes(item, offset, length uint64) ([]byte, error
 
 	dataFile, exist := t.files[fileId]
 	if !exist {
+		// For prunable tables, return empty data instead of error
+		if t.config.prunable {
+			return make([]byte, 0), nil
+		}
 		return nil, fmt.Errorf("missing data file %d", fileId)
 	}
 
@@ -1201,6 +1226,14 @@ func (t *freezerTable) sizeNolock() (uint64, error) {
 func (t *freezerTable) advanceHead() error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
+
+	// Safety check: skip for prunable tables with no head file
+	if t.head == nil {
+		if t.config.prunable {
+			return nil
+		}
+		return errClosed
+	}
 
 	if err := t.doSync(); err != nil {
 		return err

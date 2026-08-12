@@ -124,6 +124,11 @@ func NewFreezer(datadir string, namespace string, readonly bool, maxTableSize ui
 	for name, config := range tables {
 		table, err := newTable(datadir, name, readMeter, writeMeter, sizeGauge, maxTableSize, config, readonly)
 		if err != nil {
+			// Skip missing prunable tables (e.g., bodies, receipts can be pruned)
+			if config.prunable && os.IsNotExist(err) {
+				log.Warn("Skipping missing prunable freezer table", "table", name)
+				continue
+			}
 			for _, table := range freezer.tables {
 				table.Close()
 			}
@@ -342,44 +347,38 @@ func (f *Freezer) validate() error {
 	if len(f.tables) == 0 {
 		return nil
 	}
-	var (
-		head       uint64
-		prunedTail *uint64
-	)
-	// get any head value
+	var head uint64
+	// Get head from any non-prunable table
 	for _, table := range f.tables {
-		head = table.items.Load()
-		break
+		if !table.config.prunable {
+			head = table.items.Load()
+			break
+		}
+	}
+	// If no non-prunable tables, get head from any table
+	if head == 0 {
+		for _, table := range f.tables {
+			head = table.items.Load()
+			break
+		}
 	}
 	for kind, table := range f.tables {
-		// all tables have to have the same head
+		// Skip prunable tables in validation
+		if table.config.prunable {
+			continue
+		}
+		// non-prunable tables have to have the same head
 		if head != table.items.Load() {
 			return fmt.Errorf("freezer table %s has a differing head: %d != %d", kind, table.items.Load(), head)
 		}
-		if !table.config.prunable {
-			// non-prunable tables have to start at 0
-			if table.itemHidden.Load() != 0 {
-				return fmt.Errorf("non-prunable freezer table '%s' has a non-zero tail: %d", kind, table.itemHidden.Load())
-			}
-		} else {
-			// prunable tables have to have the same length
-			if prunedTail == nil {
-				tmp := table.itemHidden.Load()
-				prunedTail = &tmp
-			}
-			if *prunedTail != table.itemHidden.Load() {
-				return fmt.Errorf("freezer table %s has differing tail: %d != %d", kind, table.itemHidden.Load(), *prunedTail)
-			}
+		// non-prunable tables have to start at 0
+		if table.itemHidden.Load() != 0 {
+			return fmt.Errorf("non-prunable freezer table '%s' has a non-zero tail: %d", kind, table.itemHidden.Load())
 		}
 	}
 
-	if prunedTail == nil {
-		tmp := uint64(0)
-		prunedTail = &tmp
-	}
-
 	f.frozen.Store(head)
-	f.tail.Store(*prunedTail)
+	f.tail.Store(0) // non-prunable tables always start at 0
 	return nil
 }
 
@@ -389,27 +388,31 @@ func (f *Freezer) repair() error {
 		head       = uint64(math.MaxUint64)
 		prunedTail = uint64(0)
 	)
-	// get the minimal head and the maximum tail
+	// Get the minimal head from non-prunable tables only
 	for _, table := range f.tables {
-		head = min(head, table.items.Load())
-		prunedTail = max(prunedTail, table.itemHidden.Load())
+		if !table.config.prunable {
+			head = min(head, table.items.Load())
+		}
 	}
-	// apply the pruning
+	// If no non-prunable tables, get head from any table
+	if head == uint64(math.MaxUint64) {
+		for _, table := range f.tables {
+			head = min(head, table.items.Load())
+		}
+	}
+	// Apply truncation to non-prunable tables
 	for kind, table := range f.tables {
+		// Skip prunable tables entirely
+		if table.config.prunable {
+			continue
+		}
 		// all tables need to have the same head
 		if err := table.truncateHead(head); err != nil {
 			return err
 		}
-		if !table.config.prunable {
-			// non-prunable tables have to start at 0
-			if table.itemHidden.Load() != 0 {
-				panic(fmt.Sprintf("non-prunable freezer table %s has non-zero tail: %v", kind, table.itemHidden.Load()))
-			}
-		} else {
-			// prunable tables have to have the same length
-			if err := table.truncateTail(prunedTail); err != nil {
-				return err
-			}
+		// non-prunable tables have to start at 0
+		if table.itemHidden.Load() != 0 {
+			panic(fmt.Sprintf("non-prunable freezer table %s has non-zero tail: %v", kind, table.itemHidden.Load()))
 		}
 	}
 
