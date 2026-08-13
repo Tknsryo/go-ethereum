@@ -687,10 +687,9 @@ func pruneHistory(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	// Open the chain database
-	chain, chaindb := utils.MakeChain(ctx, stack, false)
+	// Open the chain database directly (without creating consensus engine)
+	chaindb := utils.MakeChainDatabase(ctx, stack, false)
 	defer chaindb.Close()
-	defer chain.Stop()
 
 	// Determine the tail block for pruning
 	var tailBlock uint64
@@ -700,7 +699,8 @@ func pruneHistory(ctx *cli.Context) error {
 		log.Info("Using custom tail block", "tail", tailBlock)
 	} else {
 		// Use predefined merge block for known networks
-		prunePoint, ok := history.PrunePoints[chain.Genesis().Hash()]
+		genesis := rawdb.ReadCanonicalHash(chaindb, 0)
+		prunePoint, ok := history.PrunePoints[genesis]
 		if !ok || prunePoint == nil {
 			return errors.New("prune point not found for this network. Use --tail to specify a custom tail block.")
 		}
@@ -708,7 +708,7 @@ func pruneHistory(ctx *cli.Context) error {
 	}
 
 	// Check we're far enough past tail to ensure all data is in freezer
-	currentHeader := chain.CurrentHeader()
+	currentHeader := rawdb.ReadHeadHeader(chaindb)
 	if currentHeader == nil {
 		return errors.New("current header not found")
 	}
