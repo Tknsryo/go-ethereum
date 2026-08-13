@@ -32,10 +32,13 @@ const (
 
 	// KeepPostMerge sets the history pruning point to the merge activation block.
 	KeepPostMerge
+
+	// KeepCustom sets the history pruning point to a custom block number.
+	KeepCustom
 )
 
 func (m HistoryMode) IsValid() bool {
-	return m <= KeepPostMerge
+	return m <= KeepCustom
 }
 
 func (m HistoryMode) String() string {
@@ -44,6 +47,8 @@ func (m HistoryMode) String() string {
 		return "all"
 	case KeepPostMerge:
 		return "postmerge"
+	case KeepCustom:
+		return "custom"
 	default:
 		return fmt.Sprintf("invalid HistoryMode(%d)", m)
 	}
@@ -64,8 +69,10 @@ func (m *HistoryMode) UnmarshalText(text []byte) error {
 		*m = KeepAll
 	case "postmerge":
 		*m = KeepPostMerge
+	case "custom":
+		*m = KeepCustom
 	default:
-		return fmt.Errorf(`unknown sync mode %q, want "all" or "postmerge"`, text)
+		return fmt.Errorf(`unknown sync mode %q, want "all", "postmerge" or "custom"`, text)
 	}
 	return nil
 }

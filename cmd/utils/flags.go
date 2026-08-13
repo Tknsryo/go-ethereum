@@ -303,8 +303,13 @@ var (
 	}
 	ChainHistoryFlag = &cli.StringFlag{
 		Name:     "history.chain",
-		Usage:    `Blockchain history retention ("all" or "postmerge")`,
+		Usage:    `Blockchain history retention ("all", "postmerge" or "custom")`,
 		Value:    ethconfig.Defaults.HistoryMode.String(),
+		Category: flags.StateCategory,
+	}
+	ChainHistoryCustomTailFlag = &cli.Uint64Flag{
+		Name:     "history.custom-tail",
+		Usage:    "Custom tail block number when using --history.chain=custom",
 		Category: flags.StateCategory,
 	}
 	LogHistoryFlag = &cli.Uint64Flag{
@@ -1649,6 +1654,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		if err = cfg.HistoryMode.UnmarshalText([]byte(value)); err != nil {
 			Fatalf("--%s: %v", ChainHistoryFlag.Name, err)
 		}
+	}
+	if ctx.IsSet(ChainHistoryCustomTailFlag.Name) {
+		cfg.CustomHistoryTail = ctx.Uint64(ChainHistoryCustomTailFlag.Name)
 	}
 
 	if ctx.IsSet(NetworkIdFlag.Name) {

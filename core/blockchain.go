@@ -204,7 +204,8 @@ type BlockChainConfig struct {
 
 	// This defines the cutoff block for history expiry.
 	// Blocks before this number may be unavailable in the chain database.
-	ChainHistoryMode history.HistoryMode
+	ChainHistoryMode   history.HistoryMode
+	CustomHistoryTail  uint64 // Expected tail block number when ChainHistoryMode is KeepCustom
 
 	// Misc options
 	NoPrefetch bool            // Whether to disable heuristic state prefetching when processing blocks
@@ -794,6 +795,31 @@ func (bc *BlockChain) initializeHistoryPruning(latest uint64) error {
 			return errors.New("unexpected database tail")
 		}
 		bc.historyPrunePoint.Store(predefinedPoint)
+		return nil
+
+	case history.KeepCustom:
+		// Custom mode: validate that the freezer Tail matches the expected custom tail
+		if freezerTail == 0 && latest != 0 {
+			log.Error("Chain history mode is configured as 'custom', but database is not pruned.")
+			log.Error("Run 'geth prune-history --tail <block>' to prune history to the desired block.")
+			return errors.New("history pruning requested via configuration")
+		}
+		if bc.cfg.CustomHistoryTail == 0 {
+			log.Error("Custom history mode requires --history.custom-tail to be specified")
+			return errors.New("custom history tail not configured")
+		}
+		if freezerTail != bc.cfg.CustomHistoryTail {
+			log.Error("Chain history database Tail does not match configured custom tail",
+				"actual", freezerTail, "expected", bc.cfg.CustomHistoryTail)
+			return errors.New("database Tail does not match configured custom tail")
+		}
+		// Read the block hash from the database for the Tail block
+		tailHash := rawdb.ReadCanonicalHash(bc.db, freezerTail)
+		bc.historyPrunePoint.Store(&history.PrunePoint{
+			BlockNumber: freezerTail,
+			BlockHash:   tailHash,
+		})
+		log.Info("Using custom history pruning", "tail", freezerTail, "hash", tailHash)
 		return nil
 
 	default:

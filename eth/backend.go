@@ -237,7 +237,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			StateHistory:     config.StateHistory,
 			MaxDiffLayers:    config.MaxDiffLayers,
 			StateScheme:      scheme,
-			ChainHistoryMode: config.HistoryMode,
+			ChainHistoryMode:   config.HistoryMode,
+			CustomHistoryTail:  config.CustomHistoryTail,
 			TxIndexer: &core.TxIndexerConfig{
 				Limit: min(config.TransactionHistory, math.MaxUint64),
 			},

@@ -161,7 +161,10 @@ from Era archives.
 		Name:      "export-history",
 		Usage:     "Export blockchain history to Era archives",
 		ArgsUsage: "<dir> <first> <last>",
-		Flags:     utils.DatabaseFlags,
+		Flags: slices.Concat(
+				utils.DatabaseFlags,
+				[]cli.Flag{pruneTailFlag},
+			),
 		Description: `
 The export-history command will export blocks and their corresponding receipts
 into Era archives. Eras are typically packaged in steps of 8192 blocks.
@@ -201,13 +204,22 @@ This command dumps out the state for a given block (or latest, if none provided)
 	pruneHistoryCommand = &cli.Command{
 		Action:    pruneHistory,
 		Name:      "prune-history",
-		Usage:     "Prune blockchain history (block bodies and receipts) up to the merge block",
+		Usage:     "Prune blockchain history (block bodies and receipts) up to a specified block",
 		ArgsUsage: "",
-		Flags:     utils.DatabaseFlags,
+		Flags: slices.Concat(
+				utils.DatabaseFlags,
+				[]cli.Flag{pruneTailFlag},
+			),
 		Description: `
-The prune-history command removes historical block bodies and receipts from the
-blockchain database up to the merge block, while preserving block headers. This
-helps reduce storage requirements for nodes that don't need full historical data.`,
+	The prune-history command removes historical block bodies and receipts from the
+	blockchain database up to the specified block, while preserving block headers. This
+	helps reduce storage requirements for nodes that do not need full historical data.
+
+	If --tail is specified, it will prune up to (but not including) that block number.
+	If not specified, it will use the predefined merge block for known networks.
+
+	Example:
+	  geth prune-history --tail 15000000  # Prune blocks before 15000000`,
 	}
 
 	downloadEraCommand = &cli.Command{
@@ -244,6 +256,10 @@ var (
 	eraServerFlag = &cli.StringFlag{
 		Name:  "server",
 		Usage: "era1 server URL",
+	}
+	pruneTailFlag = &cli.Uint64Flag{
+		Name:  "tail",
+		Usage: "Custom tail block number to prune up to (exclusive). If not specified, uses predefined merge block.",
 	}
 )
 
@@ -676,39 +692,44 @@ func pruneHistory(ctx *cli.Context) error {
 	defer chaindb.Close()
 	defer chain.Stop()
 
-	// Determine the prune point. This will be the first PoS block.
-	prunePoint, ok := history.PrunePoints[chain.Genesis().Hash()]
-	if !ok || prunePoint == nil {
-		return errors.New("prune point not found")
+	// Determine the tail block for pruning
+	var tailBlock uint64
+	if ctx.IsSet(pruneTailFlag.Name) {
+		// Use custom tail if specified
+		tailBlock = ctx.Uint64(pruneTailFlag.Name)
+		log.Info("Using custom tail block", "tail", tailBlock)
+	} else {
+		// Use predefined merge block for known networks
+		prunePoint, ok := history.PrunePoints[chain.Genesis().Hash()]
+		if !ok || prunePoint == nil {
+			return errors.New("prune point not found for this network. Use --tail to specify a custom tail block.")
+		}
+		tailBlock = prunePoint.BlockNumber
 	}
-	var (
-		mergeBlock     = prunePoint.BlockNumber
-		mergeBlockHash = prunePoint.BlockHash.Hex()
-	)
 
-	// Check we're far enough past merge to ensure all data is in freezer
+	// Check we're far enough past tail to ensure all data is in freezer
 	currentHeader := chain.CurrentHeader()
 	if currentHeader == nil {
 		return errors.New("current header not found")
 	}
-	if currentHeader.Number.Uint64() < mergeBlock+params.FullImmutabilityThreshold {
-		return fmt.Errorf("chain not far enough past merge block, need %d more blocks",
-			mergeBlock+params.FullImmutabilityThreshold-currentHeader.Number.Uint64())
+	if currentHeader.Number.Uint64() < tailBlock+params.FullImmutabilityThreshold {
+		return fmt.Errorf("chain not far enough past tail block, need %d more blocks",
+			tailBlock+params.FullImmutabilityThreshold-currentHeader.Number.Uint64())
 	}
 
-	// Double-check the prune block in db has the expected hash.
-	hash := rawdb.ReadCanonicalHash(chaindb, mergeBlock)
-	if hash != common.HexToHash(mergeBlockHash) {
-		return fmt.Errorf("merge block hash mismatch: got %s, want %s", hash.Hex(), mergeBlockHash)
+	// Verify the tail block exists
+	tailHash := rawdb.ReadCanonicalHash(chaindb, tailBlock)
+	if tailHash == (common.Hash{}) {
+		return fmt.Errorf("tail block %d not found in database", tailBlock)
 	}
 
-	log.Info("Starting history pruning", "head", currentHeader.Number, "tail", mergeBlock, "tailHash", mergeBlockHash)
+	log.Info("Starting history pruning", "head", currentHeader.Number.Uint64(), "tail", tailBlock, "tailHash", tailHash.Hex())
 	start := time.Now()
-	rawdb.PruneTransactionIndex(chaindb, mergeBlock)
-	if _, err := chaindb.TruncateTail(mergeBlock); err != nil {
+	rawdb.PruneTransactionIndex(chaindb, tailBlock)
+	if _, err := chaindb.TruncateTail(tailBlock); err != nil {
 		return fmt.Errorf("failed to truncate ancient data: %v", err)
 	}
-	log.Info("History pruning completed", "tail", mergeBlock, "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Info("History pruning completed", "tail", tailBlock, "elapsed", common.PrettyDuration(time.Since(start)))
 
 	// TODO(s1na): what if there is a crash between the two prune operations?
 

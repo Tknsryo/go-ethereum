@@ -92,6 +92,9 @@ type Config struct {
 	// HistoryMode configures chain history retention.
 	HistoryMode history.HistoryMode
 
+	// CustomHistoryTail specifies the expected tail block number when HistoryMode is KeepCustom.
+	CustomHistoryTail uint64 `toml:",omitempty"`
+
 	// This can be set to list of enrtree:// URLs which will be queried for
 	// nodes to connect to.
 	EthDiscoveryURLs  []string
