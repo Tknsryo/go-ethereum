@@ -42,7 +42,7 @@ func TestZMQTracer_ClientDisconnect(t *testing.T) {
 		BindEndpoints: []string{endpoint},
 		QueueSize:     100,
 		MaxSessions:   10,
-		SendTimeout: 100, // Fast timeout for tests
+		SendTimeout:   100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -168,7 +168,7 @@ func TestZMQTracer_MultipleClients(t *testing.T) {
 		BindEndpoints: []string{endpoint},
 		QueueSize:     100,
 		MaxSessions:   10,
-		SendTimeout: 100, // Fast timeout for tests
+		SendTimeout:   100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -263,7 +263,7 @@ func TestZMQTracer_EventFilter(t *testing.T) {
 		BindEndpoints: []string{endpoint},
 		QueueSize:     100,
 		MaxSessions:   10,
-		SendTimeout: 100, // Fast timeout for tests
+		SendTimeout:   100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -441,7 +441,7 @@ func TestZMQTracer_MultipleSockets(t *testing.T) {
 		BindEndpoints: []string{endpoint1, endpoint2},
 		QueueSize:     100,
 		MaxSessions:   10,
-		SendTimeout: 100, // Fast timeout for tests
+		SendTimeout:   100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -612,7 +612,7 @@ func TestZMQTracer_ConcurrentEventsDisconnect(t *testing.T) {
 		BindEndpoints: []string{endpoint},
 		QueueSize:     1000,
 		MaxSessions:   10,
-		SendTimeout: 100, // Fast timeout for tests
+		SendTimeout:   100, // Fast timeout for tests
 	})
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
@@ -736,7 +736,7 @@ func TestZMQTracer_MultipleEventTypesDisconnect(t *testing.T) {
 				BindEndpoints: []string{endpoint},
 				QueueSize:     100,
 				MaxSessions:   10,
-		SendTimeout: 100, // Fast timeout for tests
+				SendTimeout:   100, // Fast timeout for tests
 			})
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
@@ -914,8 +914,7 @@ func TestSession_LogEventFilter(t *testing.T) {
 
 		// Should accept: position 0 matches topic1, position 1 is any
 		logMatch := &ethereum_tracing.LogEvent{
-			EventType:   ethereum_tracing.EventType.Log,
-			TopicsCount: 2,
+			EventType: ethereum_tracing.EventType.Log,
 			Topics: []ethereum_tracing.LogEventTopics{
 				{Topic: topic1},
 				{Topic: topic2},
@@ -925,8 +924,7 @@ func TestSession_LogEventFilter(t *testing.T) {
 
 		// Should reject: position 0 doesn't match topic1
 		logNoMatch := &ethereum_tracing.LogEvent{
-			EventType:   ethereum_tracing.EventType.Log,
-			TopicsCount: 2,
+			EventType: ethereum_tracing.EventType.Log,
 			Topics: []ethereum_tracing.LogEventTopics{
 				{Topic: topic2},
 				{Topic: topic3},
@@ -936,8 +934,7 @@ func TestSession_LogEventFilter(t *testing.T) {
 
 		// Should reject: not enough topics (filter expects 2 positions)
 		logTooFewTopics := &ethereum_tracing.LogEvent{
-			EventType:   ethereum_tracing.EventType.Log,
-			TopicsCount: 1,
+			EventType: ethereum_tracing.EventType.Log,
 			Topics: []ethereum_tracing.LogEventTopics{
 				{Topic: topic1},
 			},
@@ -964,9 +961,8 @@ func TestSession_LogEventFilter(t *testing.T) {
 
 		// Should accept: both address and topic match
 		logMatch := &ethereum_tracing.LogEvent{
-			EventType:   ethereum_tracing.EventType.Log,
-			Address:     targetAddr,
-			TopicsCount: 1,
+			EventType: ethereum_tracing.EventType.Log,
+			Address:   targetAddr,
 			Topics: []ethereum_tracing.LogEventTopics{
 				{Topic: topic1},
 			},
@@ -975,9 +971,8 @@ func TestSession_LogEventFilter(t *testing.T) {
 
 		// Should reject: address matches but topic doesn't
 		logTopicNoMatch := &ethereum_tracing.LogEvent{
-			EventType:   ethereum_tracing.EventType.Log,
-			Address:     targetAddr,
-			TopicsCount: 1,
+			EventType: ethereum_tracing.EventType.Log,
+			Address:   targetAddr,
 			Topics: []ethereum_tracing.LogEventTopics{
 				{Topic: [32]uint8{2}},
 			},
@@ -986,9 +981,8 @@ func TestSession_LogEventFilter(t *testing.T) {
 
 		// Should reject: topic matches but address doesn't
 		logAddrNoMatch := &ethereum_tracing.LogEvent{
-			EventType:   ethereum_tracing.EventType.Log,
-			Address:     otherAddr,
-			TopicsCount: 1,
+			EventType: ethereum_tracing.EventType.Log,
+			Address:   otherAddr,
 			Topics: []ethereum_tracing.LogEventTopics{
 				{Topic: topic1},
 			},
@@ -1004,9 +998,8 @@ func TestSession_LogEventFilter(t *testing.T) {
 		}
 
 		log := &ethereum_tracing.LogEvent{
-			EventType:   ethereum_tracing.EventType.Log,
-			Address:     [20]uint8{1, 2, 3},
-			TopicsCount: 2,
+			EventType: ethereum_tracing.EventType.Log,
+			Address:   [20]uint8{1, 2, 3},
 			Topics: []ethereum_tracing.LogEventTopics{
 				{Topic: [32]uint8{1}},
 				{Topic: [32]uint8{2}},

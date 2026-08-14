@@ -17,6 +17,9 @@ type BlockStartEvent struct {
 	ParentHash     [32]uint8
 	BlockTimestamp uint64
 	TxCount        uint16
+	GasUsed        uint64
+	GasLimit       uint64
+	BaseFeePerGas  uint64
 }
 
 func (b *BlockStartEvent) Encode(_m *SbeGoMarshaller, _w io.Writer, doRangeCheck bool) error {
@@ -44,6 +47,15 @@ func (b *BlockStartEvent) Encode(_m *SbeGoMarshaller, _w io.Writer, doRangeCheck
 		return err
 	}
 	if err := _m.WriteUint16(_w, b.TxCount); err != nil {
+		return err
+	}
+	if err := _m.WriteUint64(_w, b.GasUsed); err != nil {
+		return err
+	}
+	if err := _m.WriteUint64(_w, b.GasLimit); err != nil {
+		return err
+	}
+	if err := _m.WriteUint64(_w, b.BaseFeePerGas); err != nil {
 		return err
 	}
 	return nil
@@ -101,6 +113,27 @@ func (b *BlockStartEvent) Decode(_m *SbeGoMarshaller, _r io.Reader, actingVersio
 			return err
 		}
 	}
+	if !b.GasUsedInActingVersion(actingVersion) {
+		b.GasUsed = b.GasUsedNullValue()
+	} else {
+		if err := _m.ReadUint64(_r, &b.GasUsed); err != nil {
+			return err
+		}
+	}
+	if !b.GasLimitInActingVersion(actingVersion) {
+		b.GasLimit = b.GasLimitNullValue()
+	} else {
+		if err := _m.ReadUint64(_r, &b.GasLimit); err != nil {
+			return err
+		}
+	}
+	if !b.BaseFeePerGasInActingVersion(actingVersion) {
+		b.BaseFeePerGas = b.BaseFeePerGasNullValue()
+	} else {
+		if err := _m.ReadUint64(_r, &b.BaseFeePerGas); err != nil {
+			return err
+		}
+	}
 	if actingVersion > b.SbeSchemaVersion() && blockLength > b.SbeBlockLength() {
 		io.CopyN(ioutil.Discard, _r, int64(blockLength-b.SbeBlockLength()))
 	}
@@ -150,6 +183,21 @@ func (b *BlockStartEvent) RangeCheck(actingVersion uint16, schemaVersion uint16)
 			return fmt.Errorf("Range check failed on b.TxCount (%v < %v > %v)", b.TxCountMinValue(), b.TxCount, b.TxCountMaxValue())
 		}
 	}
+	if b.GasUsedInActingVersion(actingVersion) {
+		if b.GasUsed < b.GasUsedMinValue() || b.GasUsed > b.GasUsedMaxValue() {
+			return fmt.Errorf("Range check failed on b.GasUsed (%v < %v > %v)", b.GasUsedMinValue(), b.GasUsed, b.GasUsedMaxValue())
+		}
+	}
+	if b.GasLimitInActingVersion(actingVersion) {
+		if b.GasLimit < b.GasLimitMinValue() || b.GasLimit > b.GasLimitMaxValue() {
+			return fmt.Errorf("Range check failed on b.GasLimit (%v < %v > %v)", b.GasLimitMinValue(), b.GasLimit, b.GasLimitMaxValue())
+		}
+	}
+	if b.BaseFeePerGasInActingVersion(actingVersion) {
+		if b.BaseFeePerGas < b.BaseFeePerGasMinValue() || b.BaseFeePerGas > b.BaseFeePerGasMaxValue() {
+			return fmt.Errorf("Range check failed on b.BaseFeePerGas (%v < %v > %v)", b.BaseFeePerGasMinValue(), b.BaseFeePerGas, b.BaseFeePerGasMaxValue())
+		}
+	}
 	return nil
 }
 
@@ -158,7 +206,7 @@ func BlockStartEventInit(b *BlockStartEvent) {
 }
 
 func (*BlockStartEvent) SbeBlockLength() (blockLength uint16) {
-	return 91
+	return 115
 }
 
 func (*BlockStartEvent) SbeTemplateId() (templateId uint16) {
@@ -461,4 +509,130 @@ func (*BlockStartEvent) TxCountMaxValue() uint16 {
 
 func (*BlockStartEvent) TxCountNullValue() uint16 {
 	return math.MaxUint16
+}
+
+func (*BlockStartEvent) GasUsedId() uint16 {
+	return 8
+}
+
+func (*BlockStartEvent) GasUsedSinceVersion() uint16 {
+	return 0
+}
+
+func (b *BlockStartEvent) GasUsedInActingVersion(actingVersion uint16) bool {
+	return actingVersion >= b.GasUsedSinceVersion()
+}
+
+func (*BlockStartEvent) GasUsedDeprecated() uint16 {
+	return 0
+}
+
+func (*BlockStartEvent) GasUsedMetaAttribute(meta int) string {
+	switch meta {
+	case 1:
+		return ""
+	case 2:
+		return ""
+	case 3:
+		return ""
+	case 4:
+		return "required"
+	}
+	return ""
+}
+
+func (*BlockStartEvent) GasUsedMinValue() uint64 {
+	return 0
+}
+
+func (*BlockStartEvent) GasUsedMaxValue() uint64 {
+	return math.MaxUint64 - 1
+}
+
+func (*BlockStartEvent) GasUsedNullValue() uint64 {
+	return math.MaxUint64
+}
+
+func (*BlockStartEvent) GasLimitId() uint16 {
+	return 9
+}
+
+func (*BlockStartEvent) GasLimitSinceVersion() uint16 {
+	return 0
+}
+
+func (b *BlockStartEvent) GasLimitInActingVersion(actingVersion uint16) bool {
+	return actingVersion >= b.GasLimitSinceVersion()
+}
+
+func (*BlockStartEvent) GasLimitDeprecated() uint16 {
+	return 0
+}
+
+func (*BlockStartEvent) GasLimitMetaAttribute(meta int) string {
+	switch meta {
+	case 1:
+		return ""
+	case 2:
+		return ""
+	case 3:
+		return ""
+	case 4:
+		return "required"
+	}
+	return ""
+}
+
+func (*BlockStartEvent) GasLimitMinValue() uint64 {
+	return 0
+}
+
+func (*BlockStartEvent) GasLimitMaxValue() uint64 {
+	return math.MaxUint64 - 1
+}
+
+func (*BlockStartEvent) GasLimitNullValue() uint64 {
+	return math.MaxUint64
+}
+
+func (*BlockStartEvent) BaseFeePerGasId() uint16 {
+	return 10
+}
+
+func (*BlockStartEvent) BaseFeePerGasSinceVersion() uint16 {
+	return 0
+}
+
+func (b *BlockStartEvent) BaseFeePerGasInActingVersion(actingVersion uint16) bool {
+	return actingVersion >= b.BaseFeePerGasSinceVersion()
+}
+
+func (*BlockStartEvent) BaseFeePerGasDeprecated() uint16 {
+	return 0
+}
+
+func (*BlockStartEvent) BaseFeePerGasMetaAttribute(meta int) string {
+	switch meta {
+	case 1:
+		return ""
+	case 2:
+		return ""
+	case 3:
+		return ""
+	case 4:
+		return "required"
+	}
+	return ""
+}
+
+func (*BlockStartEvent) BaseFeePerGasMinValue() uint64 {
+	return 0
+}
+
+func (*BlockStartEvent) BaseFeePerGasMaxValue() uint64 {
+	return math.MaxUint64 - 1
+}
+
+func (*BlockStartEvent) BaseFeePerGasNullValue() uint64 {
+	return math.MaxUint64
 }

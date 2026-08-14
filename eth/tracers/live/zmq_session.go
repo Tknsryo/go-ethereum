@@ -666,7 +666,7 @@ func (s *Session) shouldProcessLogEvent(log *ethereum_tracing.LogEvent) bool {
 	if len(s.logTopicsFilter) > 0 {
 		for i, topicFilter := range s.logTopicsFilter {
 			// Topic filter position exceeds log topics count
-			if i >= int(log.TopicsCount) {
+			if i >= len(log.Topics) {
 				return false
 			}
 

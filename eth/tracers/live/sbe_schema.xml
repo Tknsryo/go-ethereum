@@ -102,6 +102,9 @@
         <field name="ParentHash" id="5" type="Hash" description="Parent block hash"/>
         <field name="BlockTimestamp" id="6" type="uint64" description="Block timestamp"/>
         <field name="TxCount" id="7" type="uint16" description="Number of transactions"/>
+        <field name="GasUsed" id="8" type="uint64" description="Gas used in block"/>
+        <field name="GasLimit" id="9" type="uint64" description="Block gas limit"/>
+        <field name="BaseFeePerGas" id="10" type="uint64" description="Base fee per gas (EIP-1559)"/>
     </sbe:message>
 
     <sbe:message name="BlockEndEvent" id="14" description="Block processing end">
@@ -115,8 +118,9 @@
     <sbe:message name="LogEvent" id="15" description="Event log emitted">
         <field name="EventType" id="1" type="EventType"/>
         <field name="Timestamp" id="2" type="Timestamp"/>
+        <field name="Index" id="3" type="uint32" description="Log index in block"/>
         <field name="Address" id="4" type="Address" description="Contract address"/>
-        <field name="TopicsCount" id="5" type="uint8" description="Number of topics"/>
+        <field name="Removed" id="5" type="uint8" description="Removed flag (chain reorg)"/>
         <group name="Topics" id="6" dimensionType="groupSizeEncoding" description="Event topics">
             <field name="Topic" id="1" type="Hash"/>
         </group>

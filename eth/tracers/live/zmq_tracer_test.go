@@ -193,12 +193,13 @@ func TestSBEEncoder_LogEvent(t *testing.T) {
 	data := []byte{10, 11, 12, 13}
 
 	event := &ethereum_tracing.LogEvent{
-		EventType:   ethereum_tracing.EventType.Log,
-		Timestamp:   uint64(time.Now().UnixNano()),
-		Address:     address,
-		TopicsCount: uint8(len(topics)),
-		Topics:      topics,
-		LogData:     data,
+		EventType: ethereum_tracing.EventType.Log,
+		Timestamp: uint64(time.Now().UnixNano()),
+		Index:     42,
+		Address:   address,
+		Removed:   0,
+		Topics:    topics,
+		LogData:   data,
 	}
 
 	encoded, err := encoder.Encode(event)
@@ -225,8 +226,9 @@ func TestSBEEncoder_LogEvent(t *testing.T) {
 	// Verify all fields match
 	assert.Equal(t, event.EventType, decodedEvent.EventType, "EventType should match")
 	assert.Equal(t, event.Timestamp, decodedEvent.Timestamp, "Timestamp should match")
+	assert.Equal(t, event.Index, decodedEvent.Index, "Index should match")
 	assert.Equal(t, event.Address, decodedEvent.Address, "Address should match")
-	assert.Equal(t, event.TopicsCount, decodedEvent.TopicsCount, "TopicsCount should match")
+	assert.Equal(t, event.Removed, decodedEvent.Removed, "Removed should match")
 
 	// Verify topics
 	require.Len(t, decodedEvent.Topics, len(event.Topics), "Topics length should match")
@@ -403,12 +405,13 @@ func BenchmarkSBEEncoder_LogEvent(b *testing.B) {
 	data := []byte{10, 11, 12, 13}
 
 	event := &ethereum_tracing.LogEvent{
-		EventType:   ethereum_tracing.EventType.Log,
-		Timestamp:   uint64(time.Now().UnixNano()),
-		Address:     address,
-		TopicsCount: 1,
-		Topics:      topics,
-		LogData:     data,
+		EventType: ethereum_tracing.EventType.Log,
+		Timestamp: uint64(time.Now().UnixNano()),
+		Index:     0,
+		Address:   address,
+		Removed:   0,
+		Topics:    topics,
+		LogData:   data,
 	}
 
 	b.ResetTimer()

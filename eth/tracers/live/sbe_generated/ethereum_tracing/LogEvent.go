@@ -10,12 +10,13 @@ import (
 )
 
 type LogEvent struct {
-	EventType   EventTypeEnum
-	Timestamp   uint64
-	Address     [20]uint8
-	TopicsCount uint8
-	Topics      []LogEventTopics
-	LogData     []uint8
+	EventType EventTypeEnum
+	Timestamp uint64
+	Index     uint32
+	Address   [20]uint8
+	Removed   uint8
+	Topics    []LogEventTopics
+	LogData   []uint8
 }
 type LogEventTopics struct {
 	Topic [32]uint8
@@ -33,10 +34,13 @@ func (l *LogEvent) Encode(_m *SbeGoMarshaller, _w io.Writer, doRangeCheck bool) 
 	if err := _m.WriteUint64(_w, l.Timestamp); err != nil {
 		return err
 	}
+	if err := _m.WriteUint32(_w, l.Index); err != nil {
+		return err
+	}
 	if err := _m.WriteBytes(_w, l.Address[:]); err != nil {
 		return err
 	}
-	if err := _m.WriteUint8(_w, l.TopicsCount); err != nil {
+	if err := _m.WriteUint8(_w, l.Removed); err != nil {
 		return err
 	}
 	var TopicsBlockLength uint16 = 32
@@ -74,6 +78,13 @@ func (l *LogEvent) Decode(_m *SbeGoMarshaller, _r io.Reader, actingVersion uint1
 			return err
 		}
 	}
+	if !l.IndexInActingVersion(actingVersion) {
+		l.Index = l.IndexNullValue()
+	} else {
+		if err := _m.ReadUint32(_r, &l.Index); err != nil {
+			return err
+		}
+	}
 	if !l.AddressInActingVersion(actingVersion) {
 		for idx := 0; idx < 20; idx++ {
 			l.Address[idx] = l.AddressNullValue()
@@ -83,10 +94,10 @@ func (l *LogEvent) Decode(_m *SbeGoMarshaller, _r io.Reader, actingVersion uint1
 			return err
 		}
 	}
-	if !l.TopicsCountInActingVersion(actingVersion) {
-		l.TopicsCount = l.TopicsCountNullValue()
+	if !l.RemovedInActingVersion(actingVersion) {
+		l.Removed = l.RemovedNullValue()
 	} else {
-		if err := _m.ReadUint8(_r, &l.TopicsCount); err != nil {
+		if err := _m.ReadUint8(_r, &l.Removed); err != nil {
 			return err
 		}
 	}
@@ -144,6 +155,11 @@ func (l *LogEvent) RangeCheck(actingVersion uint16, schemaVersion uint16) error 
 			return fmt.Errorf("Range check failed on l.Timestamp (%v < %v > %v)", l.TimestampMinValue(), l.Timestamp, l.TimestampMaxValue())
 		}
 	}
+	if l.IndexInActingVersion(actingVersion) {
+		if l.Index < l.IndexMinValue() || l.Index > l.IndexMaxValue() {
+			return fmt.Errorf("Range check failed on l.Index (%v < %v > %v)", l.IndexMinValue(), l.Index, l.IndexMaxValue())
+		}
+	}
 	if l.AddressInActingVersion(actingVersion) {
 		for idx := 0; idx < 20; idx++ {
 			if l.Address[idx] < l.AddressMinValue() || l.Address[idx] > l.AddressMaxValue() {
@@ -151,9 +167,9 @@ func (l *LogEvent) RangeCheck(actingVersion uint16, schemaVersion uint16) error 
 			}
 		}
 	}
-	if l.TopicsCountInActingVersion(actingVersion) {
-		if l.TopicsCount < l.TopicsCountMinValue() || l.TopicsCount > l.TopicsCountMaxValue() {
-			return fmt.Errorf("Range check failed on l.TopicsCount (%v < %v > %v)", l.TopicsCountMinValue(), l.TopicsCount, l.TopicsCountMaxValue())
+	if l.RemovedInActingVersion(actingVersion) {
+		if l.Removed < l.RemovedMinValue() || l.Removed > l.RemovedMaxValue() {
+			return fmt.Errorf("Range check failed on l.Removed (%v < %v > %v)", l.RemovedMinValue(), l.Removed, l.RemovedMaxValue())
 		}
 	}
 	for i := range l.Topics {
@@ -207,7 +223,7 @@ func LogEventTopicsInit(l *LogEventTopics) {
 }
 
 func (*LogEvent) SbeBlockLength() (blockLength uint16) {
-	return 30
+	return 34
 }
 
 func (*LogEvent) SbeTemplateId() (templateId uint16) {
@@ -302,6 +318,48 @@ func (*LogEvent) TimestampNullValue() uint64 {
 	return math.MaxUint64
 }
 
+func (*LogEvent) IndexId() uint16 {
+	return 3
+}
+
+func (*LogEvent) IndexSinceVersion() uint16 {
+	return 0
+}
+
+func (l *LogEvent) IndexInActingVersion(actingVersion uint16) bool {
+	return actingVersion >= l.IndexSinceVersion()
+}
+
+func (*LogEvent) IndexDeprecated() uint16 {
+	return 0
+}
+
+func (*LogEvent) IndexMetaAttribute(meta int) string {
+	switch meta {
+	case 1:
+		return ""
+	case 2:
+		return ""
+	case 3:
+		return ""
+	case 4:
+		return "required"
+	}
+	return ""
+}
+
+func (*LogEvent) IndexMinValue() uint32 {
+	return 0
+}
+
+func (*LogEvent) IndexMaxValue() uint32 {
+	return math.MaxUint32 - 1
+}
+
+func (*LogEvent) IndexNullValue() uint32 {
+	return math.MaxUint32
+}
+
 func (*LogEvent) AddressId() uint16 {
 	return 4
 }
@@ -344,23 +402,23 @@ func (*LogEvent) AddressNullValue() uint8 {
 	return math.MaxUint8
 }
 
-func (*LogEvent) TopicsCountId() uint16 {
+func (*LogEvent) RemovedId() uint16 {
 	return 5
 }
 
-func (*LogEvent) TopicsCountSinceVersion() uint16 {
+func (*LogEvent) RemovedSinceVersion() uint16 {
 	return 0
 }
 
-func (l *LogEvent) TopicsCountInActingVersion(actingVersion uint16) bool {
-	return actingVersion >= l.TopicsCountSinceVersion()
+func (l *LogEvent) RemovedInActingVersion(actingVersion uint16) bool {
+	return actingVersion >= l.RemovedSinceVersion()
 }
 
-func (*LogEvent) TopicsCountDeprecated() uint16 {
+func (*LogEvent) RemovedDeprecated() uint16 {
 	return 0
 }
 
-func (*LogEvent) TopicsCountMetaAttribute(meta int) string {
+func (*LogEvent) RemovedMetaAttribute(meta int) string {
 	switch meta {
 	case 1:
 		return ""
@@ -374,15 +432,15 @@ func (*LogEvent) TopicsCountMetaAttribute(meta int) string {
 	return ""
 }
 
-func (*LogEvent) TopicsCountMinValue() uint8 {
+func (*LogEvent) RemovedMinValue() uint8 {
 	return 0
 }
 
-func (*LogEvent) TopicsCountMaxValue() uint8 {
+func (*LogEvent) RemovedMaxValue() uint8 {
 	return math.MaxUint8 - 1
 }
 
-func (*LogEvent) TopicsCountNullValue() uint8 {
+func (*LogEvent) RemovedNullValue() uint8 {
 	return math.MaxUint8
 }
 

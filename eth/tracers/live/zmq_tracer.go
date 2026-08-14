@@ -264,6 +264,9 @@ func (t *zmqTracer) OnBlockStart(event tracing.BlockEvent) {
 		ParentHash:     parentHash,
 		BlockTimestamp: b.Time(),
 		TxCount:        uint16(b.Transactions().Len()),
+		GasUsed:        b.GasUsed(),
+		GasLimit:       b.GasLimit(),
+		BaseFeePerGas:  b.BaseFee().Uint64(),
 	}
 
 	t.sendEvent(sbeEvent)
@@ -320,19 +323,25 @@ func (t *zmqTracer) OnLog(log *types.Log) {
 	copy(address[:], log.Address.Bytes())
 
 	// Convert topics
-	topicsCount := uint8(len(log.Topics))
-	topics := make([]ethereum_tracing.LogEventTopics, topicsCount)
+	topics := make([]ethereum_tracing.LogEventTopics, len(log.Topics))
 	for i, topic := range log.Topics {
 		copy(topics[i].Topic[:], topic.Bytes())
 	}
 
+	// Removed flag: 1 if log was removed due to chain reorg
+	var removed uint8
+	if log.Removed {
+		removed = 1
+	}
+
 	event := &ethereum_tracing.LogEvent{
-		EventType:   ethereum_tracing.EventType.Log,
-		Timestamp:   uint64(time.Now().UnixNano()),
-		Address:     address,
-		TopicsCount: topicsCount,
-		Topics:      topics,
-		LogData:     log.Data,
+		EventType: ethereum_tracing.EventType.Log,
+		Timestamp: uint64(time.Now().UnixNano()),
+		Index:     uint32(log.Index),
+		Address:   address,
+		Removed:   removed,
+		Topics:    topics,
+		LogData:   log.Data,
 	}
 
 	t.sendEvent(event)
