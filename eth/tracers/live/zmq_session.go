@@ -27,12 +27,18 @@ import (
 
 	"github.com/ethereum/go-ethereum/eth/tracers/live/sbe_generated/ethereum_tracing"
 	"github.com/ethereum/go-ethereum/log"
-	zmq "gopkg.in/pebbe/zmq4.v1"
+	zmq "github.com/pebbe/zmq4"
 )
 
 var (
 	ErrSessionManagerClosed = errors.New("session manager is closed")
 	ErrMaxSessionsReached   = errors.New("maximum number of sessions reached")
+)
+
+const (
+	// inprocEndpointIndex is the index of internal ROUTER socket in routerSockets and bindEndpoints
+	// Internal ROUTER is always at index 0 for easy identification and priority handling
+	inprocEndpointIndex = 0
 )
 
 // getEventTypeRange extracts event type boundaries from SBE-generated EventType
@@ -92,6 +98,9 @@ type Session struct {
 	socketIndex int    // Index of ROUTER socket this session belongs to
 	manager     *ZMQSessionManager
 
+	// Thread-safe event sending via DEALER socket
+	dealerSocket *zmq.Socket // DEALER socket for sending events (thread-safe)
+
 	// LogEvent specific filters (eth_getLogs style)
 	// Using byte arrays for efficient comparison without hex conversion
 	logAddressFilter map[[20]byte]bool   // nil/empty = accept all addresses
@@ -132,9 +141,23 @@ func NewZMQSessionManager(cfg *ZMQSessionManagerConfig) (*ZMQSessionManager, err
 	sessionCounts := make([]atomic.Int64, eventTypeEnd)
 
 	// Create ROUTER sockets for each endpoint
-	routerSockets := make([]*zmq.Socket, 0, len(cfg.BindEndpoints))
-	bindEndpoints := make([]string, 0, len(cfg.BindEndpoints))
+	routerSockets := make([]*zmq.Socket, 0, len(cfg.BindEndpoints)+1) // +1 for inproc
+	bindEndpoints := make([]string, 0, len(cfg.BindEndpoints)+1)
 
+	// Create internal ROUTER socket (inproc) for session DEALER sockets - put at index 0
+	inprocEndpoint := fmt.Sprintf("inproc://zmq-tracer-%d", time.Now().UnixNano())
+	inprocSocket, err := zmq.NewSocket(zmq.ROUTER)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create inproc ROUTER socket: %w", err)
+	}
+	if err := inprocSocket.SetRouterMandatory(1); err != nil {
+		inprocSocket.Close()
+		return nil, fmt.Errorf("failed to set ROUTER_MANDATORY for inproc socket: %w", err)
+	}
+	routerSockets = append(routerSockets, inprocSocket)
+	bindEndpoints = append(bindEndpoints, inprocEndpoint)
+
+	// Create external ROUTER sockets (starting from index 1)
 	for _, endpoint := range cfg.BindEndpoints {
 		socket, err := zmq.NewSocket(zmq.ROUTER)
 		if err != nil {
@@ -188,6 +211,11 @@ func (m *ZMQSessionManager) Start() error {
 	for i, socket := range m.routerSockets {
 		endpoint := m.bindEndpoints[i]
 
+		// Set socket options before binding
+		if err := socket.SetLinger(0); err != nil {
+			log.Warn("Failed to set LINGER on socket", "endpoint", endpoint, "error", err)
+		}
+
 		// Bind socket
 		if err := socket.Bind(endpoint); err != nil {
 			return fmt.Errorf("failed to bind ROUTER socket to %s: %w", endpoint, err)
@@ -212,25 +240,46 @@ func (m *ZMQSessionManager) Start() error {
 // Uses zmq.Poller to monitor multiple ROUTER sockets
 func (m *ZMQSessionManager) handleMessages() {
 	defer m.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("handleMessages panic recovered", "error", r)
+		}
+	}()
+
+	log.Info("handleMessages started", "socketCount", len(m.routerSockets))
 
 	// Create poller and add all ROUTER sockets
 	poller := zmq.NewPoller()
-	for _, socket := range m.routerSockets {
+	for i, socket := range m.routerSockets {
+		if socket == nil {
+			log.Error("Nil socket in routerSockets", "index", i)
+			continue
+		}
 		poller.Add(socket, zmq.POLLIN)
+		log.Debug("Added socket to poller", "index", i, "endpoint", m.bindEndpoints[i])
 	}
 
+	pollCount := 0
 	for {
 		select {
 		case <-m.shutdownChan:
+			log.Info("handleMessages shutting down", "pollCount", pollCount)
 			return
 		default:
 			// Poll all sockets with timeout for responsive shutdown
+			pollCount++
 			sockets, err := poller.Poll(100 * time.Millisecond)
 			if err != nil {
-				if err.Error() == "resource temporarily unavailable" {
-					continue // Timeout, check shutdown
+				select {
+				case <-m.shutdownChan:
+					return
+				default:
 				}
-				log.Error("Poll failed", "error", err)
+
+				if err.Error() != "resource temporarily unavailable" {
+					log.Error("Poll failed", "error", err, "pollCount", pollCount, "endpoints", m.bindEndpoints)
+				}
+
 				continue
 			}
 
@@ -261,46 +310,103 @@ func (m *ZMQSessionManager) findSocketIndex(socket *zmq.Socket) int {
 }
 
 // handleSocketMessage handles a message from a specific ROUTER socket
+// External ROUTER (socketIdx < len(routerSockets)-1): receives 2 frames [client_identity][request]
+// Internal ROUTER (socketIdx == len(routerSockets)-1): receives 4 frames [dealer_identity][socketIndex][target_client][event]
 func (m *ZMQSessionManager) handleSocketMessage(socketIdx int) {
 	socket := m.routerSockets[socketIdx]
 
-	// ROUTER receives from DEALER: [identity][data]
-	// Note: DEALER doesn't add delimiter for single-frame messages
-	identity, err := socket.RecvBytes(0)
-	if err != nil {
-		if err.Error() == "socket is closed" {
+	// Check if this is internal ROUTER (socket at inprocEndpointIndex)
+	isInternalRouter := socketIdx == inprocEndpointIndex
+
+	if isInternalRouter {
+		// Internal ROUTER: 4 frames [dealer_identity][socketIndex][target_client][event]
+		// Receive all 4 frames
+		// dealerIdentity is automatically added by DEALER socket, but we use socketIndex for routing
+		_, err := socket.RecvBytes(0)
+		if err != nil {
+			if err.Error() == "socket is closed" {
+				return
+			}
+			log.Error("Failed to receive dealer identity", "error", err)
 			return
 		}
-		log.Error("Failed to receive identity", "socketIndex", socketIdx, "error", err)
-		return
-	}
 
-	// Check if there's more data (should be true for DEALER messages)
-	more, err := socket.GetRcvmore()
-	if err != nil {
-		log.Error("Failed to check Rcvmore", "socketIndex", socketIdx, "error", err)
-		return
-	}
+		more, err := socket.GetRcvmore()
+		if err != nil || !more {
+			log.Error("Internal message incomplete (no socketIndex)")
+			return
+		}
 
-	if !more {
-		log.Warn("Received message without data part", "socketIndex", socketIdx)
-		return
-	}
+		socketIndexFrame, err := socket.RecvBytes(0)
+		if err != nil {
+			log.Error("Failed to receive socketIndex frame", "error", err)
+			return
+		}
 
-	// Receive data
-	data, err := socket.RecvBytes(0)
-	if err != nil {
-		log.Error("Failed to receive data", "socketIndex", socketIdx, "error", err)
-		return
-	}
+		more, err = socket.GetRcvmore()
+		if err != nil || !more {
+			log.Error("Internal message incomplete (no target client)")
+			return
+		}
 
-	// Process message (pass socket index for session creation)
-	response := m.processMessage(identity, data, socketIdx)
+		targetClient, err := socket.RecvBytes(0)
+		if err != nil {
+			log.Error("Failed to receive target client", "error", err)
+			return
+		}
 
-	// Send response: [identity][data]
-	if len(response) > 0 {
-		if err := m.sendToClient(identity, response, socketIdx); err != nil {
-			log.Error("Failed to send response", "socketIndex", socketIdx, "error", err)
+		more, err = socket.GetRcvmore()
+		if err != nil || !more {
+			log.Error("Internal message incomplete (no event data)")
+			return
+		}
+
+		eventData, err := socket.RecvBytes(0)
+		if err != nil {
+			log.Error("Failed to receive event data", "error", err)
+			return
+		}
+
+		// Parse socketIndex
+		if len(socketIndexFrame) < 1 {
+			log.Error("Invalid socketIndex frame")
+			return
+		}
+		targetSocketIdx := int(socketIndexFrame[0])
+
+		// Forward to target client via appropriate external ROUTER
+		m.forwardToClient(targetClient, eventData, targetSocketIdx)
+	} else {
+		// External ROUTER: 2 frames [client_identity][request_data]
+		identity, err := socket.RecvBytes(0)
+		if err != nil {
+			if err.Error() == "socket is closed" {
+				return
+			}
+			log.Error("Failed to receive identity", "socketIndex", socketIdx, "error", err)
+			return
+		}
+
+		more, err := socket.GetRcvmore()
+		if err != nil || !more {
+			log.Error("External message incomplete", "socketIndex", socketIdx)
+			return
+		}
+
+		data, err := socket.RecvBytes(0)
+		if err != nil {
+			log.Error("Failed to receive data", "socketIndex", socketIdx, "error", err)
+			return
+		}
+
+		// Process message
+		response := m.processMessage(identity, data, socketIdx)
+
+		// Send response directly
+		if len(response) > 0 {
+			if err := m.sendToClientDirect(identity, response, socketIdx); err != nil {
+				log.Error("Failed to send response", "socketIndex", socketIdx, "error", err)
+			}
 		}
 	}
 }
@@ -471,6 +577,18 @@ func (m *ZMQSessionManager) createSession(identity []byte, req *ethereum_tracing
 		}
 	}
 
+	// Create DEALER socket for this session (thread-safe sending)
+	dealerSocket, err := zmq.NewSocket(zmq.DEALER)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DEALER socket for session: %w", err)
+	}
+
+	// Connect DEALER to inproc ROUTER
+	if err := dealerSocket.Connect(m.bindEndpoints[inprocEndpointIndex]); err != nil {
+		dealerSocket.Close()
+		return nil, fmt.Errorf("failed to connect DEALER socket: %w", err)
+	}
+
 	// Create session
 	session := &Session{
 		ID:               sessionID,
@@ -478,6 +596,7 @@ func (m *ZMQSessionManager) createSession(identity []byte, req *ethereum_tracing
 		filterMask:       req.FilterMask,
 		socketIndex:      socketIdx,
 		manager:          m,
+		dealerSocket:     dealerSocket,
 		logAddressFilter: logAddressFilter,
 		logTopicsFilter:  logTopicsFilter,
 	}
@@ -554,42 +673,93 @@ func (m *ZMQSessionManager) broadcastEvent(event SBEEvent) {
 	}
 }
 
-// sendToClient sends a message to a specific client via ROUTER socket
-// Returns error if client is disconnected (EHOSTUNREACH) or socket not writable
+// sendToClient sends a message to a specific client via session's DEALER socket
+// This is thread-safe because DEALER socket is owned by the session
+// Message format: [socketIndex][identity][data]
+// Internal ROUTER will add dealer_identity prefix and route to correct external ROUTER
 func (m *ZMQSessionManager) sendToClient(identity []byte, data []byte, socketIdx int) error {
-	// Validate socket index
-	if socketIdx < 0 || socketIdx >= len(m.routerSockets) {
+	// Get session by identity
+	identityKey := string(identity)
+	m.mu.RLock()
+	session, exists := m.identityToSession[identityKey]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("session not found for identity")
+	}
+
+	// Use session's DEALER socket (thread-safe)
+	socket := session.dealerSocket
+
+	// Send 3 frames: [socketIndex][identity][data]
+	// First frame: socketIndex (1 byte)
+	socketIndexByte := []byte{byte(socketIdx)}
+	if _, err := socket.SendBytes(socketIndexByte, zmq.SNDMORE); err != nil {
+		return fmt.Errorf("failed to send socketIndex: %w", err)
+	}
+
+	// Second frame: client identity
+	if _, err := socket.SendBytes(identity, zmq.SNDMORE); err != nil {
+		return fmt.Errorf("failed to send identity: %w", err)
+	}
+
+	// Third frame: event data
+	if _, err := socket.SendBytes(data, 0); err != nil {
+		return fmt.Errorf("failed to send data: %w", err)
+	}
+
+	return nil
+}
+
+// forwardToClient forwards a message from internal ROUTER to external ROUTER
+// This is called when internal ROUTER receives a message from session's DEALER
+// Message format from internal ROUTER: [dealer_identity][socketIndex][target_client][event_data]
+// This function sends: [target_client][event_data] to external ROUTER
+func (m *ZMQSessionManager) forwardToClient(targetClient []byte, eventData []byte, socketIdx int) {
+	// Validate socket index (must be external ROUTER, index > inprocEndpointIndex)
+	if socketIdx <= inprocEndpointIndex || socketIdx >= len(m.routerSockets) {
+		log.Error("Invalid socket index for forwarding", "socketIndex", socketIdx)
+		return
+	}
+
+	socket := m.routerSockets[socketIdx]
+
+	// Send to external ROUTER: [identity][data]
+	// First frame: client identity with SNDMORE
+	if _, err := socket.SendBytes(targetClient, zmq.SNDMORE); err != nil {
+		log.Error("Failed to forward identity", "socketIndex", socketIdx, "error", err)
+		// Client disconnected - cleanup session (async to avoid deadlock)
+		go m.cleanupSession(targetClient)
+		return
+	}
+
+	// Second frame: event data
+	if _, err := socket.SendBytes(eventData, 0); err != nil {
+		log.Error("Failed to forward event data", "socketIndex", socketIdx, "error", err)
+		// Client disconnected - cleanup session (async to avoid deadlock)
+		go m.cleanupSession(targetClient)
+		return
+	}
+}
+
+// sendToClientDirect sends a response directly to client via external ROUTER
+// Used for immediate responses (e.g., session creation response)
+// Does not use DEALER socket, directly sends via ROUTER
+func (m *ZMQSessionManager) sendToClientDirect(identity []byte, data []byte, socketIdx int) error {
+	// Validate socket index (must be external ROUTER, index > inprocEndpointIndex)
+	if socketIdx <= inprocEndpointIndex || socketIdx >= len(m.routerSockets) {
 		return fmt.Errorf("invalid socket index: %d", socketIdx)
 	}
 
 	socket := m.routerSockets[socketIdx]
 
-	// Check if socket is writable using Poll with POLLOUT
-	// This prevents blocking when client buffer is full or disconnected
-	// Timeout is configurable (default 2s) for network-friendly operation
-	poller := zmq.NewPoller()
-	poller.Add(socket, zmq.POLLOUT)
-
-	sockets, err := poller.Poll(m.sendTimeout)
-	if err != nil {
-		return fmt.Errorf("poll failed: %w", err)
-	}
-
-	// Check if socket is ready for writing
-	if len(sockets) == 0 {
-		// Socket not writable (timeout) - client likely disconnected or buffer full
-		return fmt.Errorf("socket not writable (timeout after %v)", m.sendTimeout)
-	}
-
-	// Socket is ready, send the message
-	// ROUTER send format: [identity][data]
-	// Note: No delimiter needed for DEALER clients
-	// First send identity with SNDMORE flag
+	// Send directly via ROUTER: [identity][data]
+	// First frame: client identity with SNDMORE
 	if _, err := socket.SendBytes(identity, zmq.SNDMORE); err != nil {
 		return fmt.Errorf("failed to send identity: %w", err)
 	}
 
-	// Send data (final frame)
+	// Second frame: response data
 	if _, err := socket.SendBytes(data, 0); err != nil {
 		return fmt.Errorf("failed to send data: %w", err)
 	}
@@ -606,6 +776,11 @@ func (m *ZMQSessionManager) cleanupSession(identity []byte) {
 	session, exists := m.identityToSession[identityKey]
 	if !exists {
 		return
+	}
+
+	// Close DEALER socket
+	if session.dealerSocket != nil {
+		session.dealerSocket.Close()
 	}
 
 	// Remove session

@@ -24,7 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/eth/tracers/live/sbe_generated/ethereum_tracing"
 	"github.com/stretchr/testify/assert"
-	zmq "gopkg.in/pebbe/zmq4.v1"
+	zmq "github.com/pebbe/zmq4"
 )
 
 // TestZMQTracer_ClientDisconnect 测试客户端断开连接场景
@@ -495,19 +495,19 @@ func TestZMQTracer_MultipleSockets(t *testing.T) {
 	client1.SendBytes(request, 0)
 	response1, _ := client1.RecvBytes(0)
 	sessionID1, _ := parseSessionResponse(response1)
-	t.Logf("Client1: Session %d created on endpoint1 (socket 0)", sessionID1)
+	t.Logf("Client1: Session %d created on endpoint1 (socket 1)", sessionID1)
 
 	// Client 2 creates session on socket 1
 	client2.SendBytes(request, 0)
 	response2, _ := client2.RecvBytes(0)
 	sessionID2, _ := parseSessionResponse(response2)
-	t.Logf("Client2: Session %d created on endpoint2 (socket 1)", sessionID2)
+	t.Logf("Client2: Session %d created on endpoint2 (socket 2)", sessionID2)
 
 	// Client 3 creates session on socket 0 (same as client 1)
 	client3.SendBytes(request, 0)
 	response3, _ := client3.RecvBytes(0)
 	sessionID3, _ := parseSessionResponse(response3)
-	t.Logf("Client3: Session %d created on endpoint1 (socket 0)", sessionID3)
+	t.Logf("Client3: Session %d created on endpoint1 (socket 1)", sessionID3)
 
 	// Wait for session creation
 	time.Sleep(100 * time.Millisecond)
@@ -518,16 +518,17 @@ func TestZMQTracer_MultipleSockets(t *testing.T) {
 	}
 
 	// Verify sessions are on correct sockets
+	// Note: Internal ROUTER is at index 0, external ROUTERs start at index 1
 	sessionMgr.mu.RLock()
 	for _, session := range sessionMgr.sessions {
 		switch session.ID {
 		case sessionID1, sessionID3:
-			if session.socketIndex != 0 {
-				t.Errorf("Session %d should be on socket 0, got %d", session.ID, session.socketIndex)
+			if session.socketIndex != 1 { // endpoint1 is now at index 1
+				t.Errorf("Session %d should be on socket 1, got %d", session.ID, session.socketIndex)
 			}
 		case sessionID2:
-			if session.socketIndex != 1 {
-				t.Errorf("Session %d should be on socket 1, got %d", session.ID, session.socketIndex)
+			if session.socketIndex != 2 { // endpoint2 is now at index 2
+				t.Errorf("Session %d should be on socket 2, got %d", session.ID, session.socketIndex)
 			}
 		}
 	}
