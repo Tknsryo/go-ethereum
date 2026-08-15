@@ -106,7 +106,6 @@ func newZMQTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		OnBlockStart:      tracer.OnBlockStart,
 		OnBlockEnd:        tracer.OnBlockEnd,
 		OnBlockEndMetrics: tracer.OnBlockEndMetrics,
-		OnLog:             tracer.OnLog,
 		OnClose:           tracer.OnClose,
 	}, nil
 }
@@ -118,18 +117,11 @@ func (t *zmqTracer) OnTxStart(vm *tracing.VMContext, tx *types.Transaction, from
 		return
 	}
 
-	// Convert common types to [N]uint8 arrays
-	var txHash [32]uint8
-	copy(txHash[:], tx.Hash().Bytes())
-
-	var fromAddr [20]uint8
-	copy(fromAddr[:], from.Bytes())
-
 	event := &ethereum_tracing.TxStartEvent{
 		EventType: ethereum_tracing.EventType.TxStart,
 		Timestamp: uint64(time.Now().UnixNano()),
-		TxHash:    txHash,
-		From:      fromAddr,
+		TxHash:    tx.Hash(),
+		From:      from,
 		GasLimit:  tx.Gas(),
 		Nonce:     tx.Nonce(),
 	}
@@ -150,7 +142,33 @@ func (t *zmqTracer) OnTxStart(vm *tracing.VMContext, tx *types.Transaction, from
 
 // OnTxEnd is called when a transaction completes
 func (t *zmqTracer) OnTxEnd(receipt *types.Receipt, err error) {
-	// Fast path: skip if no sessions subscribe to TxEnd events
+	// Send logs from receipt first (if transaction was successful)
+	if receipt != nil && receipt.Status == types.ReceiptStatusSuccessful && len(receipt.Logs) > 0 {
+		// Check if any sessions subscribe to Log events
+		if t.sessionManager.HasSessionsForEventType(ethereum_tracing.EventType.Log) {
+			for _, logEntry := range receipt.Logs {
+				// Convert topics
+				topics := make([]ethereum_tracing.LogEventTopics, len(logEntry.Topics))
+				for i, topic := range logEntry.Topics {
+					copy(topics[i].Topic[:], topic.Bytes())
+				}
+
+				event := &ethereum_tracing.LogEvent{
+					EventType: ethereum_tracing.EventType.Log,
+					Timestamp: uint64(time.Now().UnixNano()),
+					Index:     uint32(logEntry.Index),
+					Address:   logEntry.Address,
+					Removed:   0, // Logs in receipt are not removed
+					Topics:    topics,
+					LogData:   logEntry.Data,
+				}
+
+				t.sendEvent(event)
+			}
+		}
+	}
+
+	// Fast path: skip TxEnd if no sessions subscribe to TxEnd events
 	if !t.sessionManager.HasSessionsForEventType(ethereum_tracing.EventType.TxEnd) {
 		return
 	}
@@ -190,19 +208,13 @@ func (t *zmqTracer) OnEnter(depth int, typ byte, from common.Address, to common.
 		return
 	}
 
-	var fromAddr [20]uint8
-	copy(fromAddr[:], from.Bytes())
-
-	var toAddr [20]uint8
-	copy(toAddr[:], to.Bytes())
-
 	event := &ethereum_tracing.CallEvent{
 		EventType: ethereum_tracing.EventType.Enter,
 		Timestamp: uint64(time.Now().UnixNano()),
 		Depth:     uint8(depth),
 		CallType:  typ,
-		From:      fromAddr,
-		To:        toAddr,
+		From:      from,
+		To:        to,
 		Gas:       gas,
 		Input:     input,
 	}
@@ -250,18 +262,12 @@ func (t *zmqTracer) OnBlockStart(event tracing.BlockEvent) {
 		return
 	}
 
-	var hash [32]uint8
-	copy(hash[:], b.Hash().Bytes())
-
-	var parentHash [32]uint8
-	copy(parentHash[:], b.ParentHash().Bytes())
-
 	sbeEvent := &ethereum_tracing.BlockStartEvent{
 		EventType:      ethereum_tracing.EventType.BlockStart,
 		Timestamp:      uint64(time.Now().UnixNano()),
 		Number:         b.NumberU64(),
-		Hash:           hash,
-		ParentHash:     parentHash,
+		Hash:           b.Hash(),
+		ParentHash:     b.ParentHash(),
 		BlockTimestamp: b.Time(),
 		TxCount:        uint16(b.Transactions().Len()),
 		GasUsed:        b.GasUsed(),
@@ -319,9 +325,6 @@ func (t *zmqTracer) OnLog(log *types.Log) {
 		return
 	}
 
-	var address [20]uint8
-	copy(address[:], log.Address.Bytes())
-
 	// Convert topics
 	topics := make([]ethereum_tracing.LogEventTopics, len(log.Topics))
 	for i, topic := range log.Topics {
@@ -338,7 +341,7 @@ func (t *zmqTracer) OnLog(log *types.Log) {
 		EventType: ethereum_tracing.EventType.Log,
 		Timestamp: uint64(time.Now().UnixNano()),
 		Index:     uint32(log.Index),
-		Address:   address,
+		Address:   log.Address,
 		Removed:   removed,
 		Topics:    topics,
 		LogData:   log.Data,
